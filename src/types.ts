@@ -44,8 +44,13 @@ export interface WindowSummary {
   btcReturn: number | null;       // % return over the window
   // Result
   upWon: boolean | null;          // Did UP token win?
-  profitIfUp: number | null;       // Profit if bet on UP (1 share)
-  profitIfDown: number | null;    // Profit if bet on DOWN (1 share)
+  profitIfUp: number | null;       // Gross profit if bet on UP (1 share)
+  profitIfDown: number | null;    // Gross profit if bet on DOWN (1 share)
+  // Friction-adjusted P&L (net after spread + fee)
+  netProfitIfUp: number | null;   // profitIfUp  - spreadCost - feeCost
+  netProfitIfDown: number | null; // profitIfDown - spreadCost - feeCost
+  spreadCost: number | null;      // upAsk - upBid at signal time (entry slippage)
+  feeCost: number | null;         // Polymarket taker fee ≈ 2% of notional (configurable)
   createdAt: number;
 }
 

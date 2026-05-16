@@ -39,58 +39,78 @@ const SLUG_PREFIX: Record<Coin, Record<number, string>> = {
 };
 
 /**
+ * Get current time in US/Eastern timezone using the IANA tz database.
+ * Correctly handles DST transitions without hardcoded month arithmetic.
+ * Returns an etDate whose UTC fields mirror ET wall-clock fields (for arithmetic),
+ * plus etOffsetMs = etDate.getTime() - now.getTime() (i.e. ET_ms - UTC_ms).
+ */
+function getEasternDate(): { etDate: Date; etOffsetMs: number } {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(now)
+      .filter(p => p.type !== "literal")
+      .map(p => [p.type, p.value])
+  );
+  // Treat ET wall-clock as if it were UTC (for floor/interval arithmetic)
+  const etDate = new Date(
+    `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`
+  );
+  const etOffsetMs = etDate.getTime() - now.getTime();
+  return { etDate, etOffsetMs };
+}
+
+/**
  * Calculate the current time bucket for a given coin and duration.
  * The slug timestamp must match Polymarket's ET-based window start.
  */
 export function getTimeBucket(coin: Coin, minutes: number): TimeBucket {
-  const now = new Date();
-
-  // Convert to ET (UTC-4 during EDT, UTC-5 during EST)
-  // Simple approach: subtract 4 or 5 hours and check which gives a valid date
-  const isDst = now.getUTCMonth() + 1 > 3 && now.getUTCMonth() + 1 < 11;
-  const etOffsetHours = isDst ? -4 : -5;
-  const etMs = now.getTime() + etOffsetHours * 3600 * 1000;
-  const etDate = new Date(etMs);
+  const { etDate, etOffsetMs } = getEasternDate();
 
   if (minutes === 5) {
     const interval = 5 * 60 * 1000;
     const etBucketMs = Math.floor(etDate.getTime() / interval) * interval;
-    // Convert ET bucket start back to UTC timestamp for slug
-    const slugTs = Math.floor((etBucketMs - etOffsetHours * 3600 * 1000) / 1000);
+    // Convert ET bucket start back to real UTC milliseconds, then to seconds
+    const slugTs = Math.floor((etBucketMs - etOffsetMs) / 1000);
     return { slug: `${coin}-updown-5m-${slugTs}`, endTimestamp: slugTs + 5 * 60 };
   }
 
   if (minutes === 15) {
     const interval = 15 * 60 * 1000;
     const etBucketMs = Math.floor(etDate.getTime() / interval) * interval;
-    const slugTs = Math.floor((etBucketMs - etOffsetHours * 3600 * 1000) / 1000);
+    const slugTs = Math.floor((etBucketMs - etOffsetMs) / 1000);
     return { slug: `${coin}-updown-15m-${slugTs}`, endTimestamp: slugTs + 15 * 60 };
   }
 
   if (minutes === 60) {
     const etHourStart = new Date(etDate);
     etHourStart.setUTCMinutes(0, 0, 0);
-    const slugTs = Math.floor((etHourStart.getTime() - etOffsetHours * 3600 * 1000) / 1000);
+    const slugTs = Math.floor((etHourStart.getTime() - etOffsetMs) / 1000);
     const slugPrefix = SLUG_PREFIX[coin][60];
     const monthNames = ["january","february","march","april","may","june","july","august","september","october","november","december"];
     const month = monthNames[etHourStart.getUTCMonth()];
     const day = etHourStart.getUTCDate();
-    let hour = etHourStart.getUTCHours();
-    let timeStr = hour === 0 ? "12am" : hour < 12 ? `${hour}am` : hour === 12 ? "12pm" : `${hour - 12}pm`;
+    const hour = etHourStart.getUTCHours();
+    const timeStr = hour === 0 ? "12am" : hour < 12 ? `${hour}am` : hour === 12 ? "12pm" : `${hour - 12}pm`;
     return { slug: `${slugPrefix}-${month}-${day}-${timeStr}-et`, endTimestamp: slugTs + 60 * 60 };
   }
 
   if (minutes === 240) {
-    const interval = 4 * 60 * 1000;
+    const interval = 4 * 60 * 60 * 1000;
     const etBucketMs = Math.floor(etDate.getTime() / interval) * interval;
-    const slugTs = Math.floor((etBucketMs - etOffsetHours * 3600 * 1000) / 1000);
+    const slugTs = Math.floor((etBucketMs - etOffsetMs) / 1000);
     return { slug: `${coin}-updown-4h-${slugTs}`, endTimestamp: slugTs + 4 * 60 * 60 };
   }
 
   if (minutes === 1440) {
     const interval = 24 * 60 * 60 * 1000;
     const etDayStart = new Date(Math.floor(etDate.getTime() / interval) * interval);
-    const slugTs = Math.floor((etDayStart.getTime() - etOffsetHours * 3600 * 1000) / 1000);
+    const slugTs = Math.floor((etDayStart.getTime() - etOffsetMs) / 1000);
     const monthNames = ["january","february","march","april","may","june","july","august","september","october","november","december"];
     return {
       slug: `${SLUG_PREFIX[coin][1440]}-${monthNames[etDayStart.getUTCMonth()]}-${etDayStart.getUTCDate()}`,

@@ -59,6 +59,10 @@ function initSchema(db: Database.Database): void {
       up_won INTEGER,
       profit_if_up REAL,
       profit_if_down REAL,
+      net_profit_if_up REAL,
+      net_profit_if_down REAL,
+      spread_cost REAL,
+      fee_cost REAL,
       created_at INTEGER NOT NULL
     );
 
@@ -94,8 +98,10 @@ export function insertWindowSummary(summary: Omit<WindowSummary, "id">): number 
       coin, slug, window_start_timestamp, window_end_timestamp,
       signal_up_price, signal_down_price, signal_up_time, signal_down_time,
       btc_entry_price, btc_exit_price, btc_return,
-      up_won, profit_if_up, profit_if_down, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      up_won, profit_if_up, profit_if_down,
+      net_profit_if_up, net_profit_if_down, spread_cost, fee_cost,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     summary.coin,
@@ -112,6 +118,10 @@ export function insertWindowSummary(summary: Omit<WindowSummary, "id">): number 
     summary.upWon === null ? null : (summary.upWon ? 1 : 0),
     summary.profitIfUp,
     summary.profitIfDown,
+    summary.netProfitIfUp,
+    summary.netProfitIfDown,
+    summary.spreadCost,
+    summary.feeCost,
     summary.createdAt
   );
   return result.lastInsertRowid as number;
@@ -143,6 +153,10 @@ export function getWindowSummaries(limit: number = 500): WindowSummary[] {
     btcReturn: row.btc_return,
     profitIfUp: row.profit_if_up,
     profitIfDown: row.profit_if_down,
+    netProfitIfUp: row.net_profit_if_up,
+    netProfitIfDown: row.net_profit_if_down,
+    spreadCost: row.spread_cost,
+    feeCost: row.fee_cost,
     signalUpPrice: row.signal_up_price,
     signalDownPrice: row.signal_down_price,
     signalUpTime: row.signal_up_time,

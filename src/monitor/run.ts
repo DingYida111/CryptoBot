@@ -17,14 +17,37 @@ import type { Tick, Coin } from "../types.js";
 import { config as dotenvConfig } from "dotenv";
 dotenvConfig();
 
-// Config from env with defaults
-const INTERVAL_MS = parseInt(process.env.DATA_COLLECT_INTERVAL_MS ?? "5000");
-const TARGET_MARKETS = (process.env.TARGET_MARKETS ?? "btc")
-  .split(",")
-  .map((s) => s.trim().toLowerCase()) as Coin[];
-const WINDOW_DURATION_MINUTES = parseInt(process.env.WINDOW_DURATION_MINUTES ?? "15");
-const LOG_DIR = path.resolve(process.env.LOG_DIR ?? "logs");
-const LOG_FILE = path.join(LOG_DIR, `${process.env.LOG_FILE_PREFIX ?? "collector"}-${new Date().toISOString().slice(0, 10)}.log`);
+import { z } from "zod";
+
+// ── Env schema (validated at startup) ────────────────────────────────────────
+const EnvSchema = z.object({
+  DATA_COLLECT_INTERVAL_MS: z.coerce.number().int().min(1000).default(5000),
+  TARGET_MARKETS: z.string().default("btc"),
+  WINDOW_DURATION_MINUTES: z.coerce.number().int().min(1).default(15),
+  LOG_DIR: z.string().default("logs"),
+  LOG_FILE_PREFIX: z.string().default("collector"),
+  POLYMARKET_FEE_RATE: z.coerce.number().min(0).max(1).default(0.02), // 2% taker fee
+  SIGNAL_THRESHOLD: z.coerce.number().min(0.5).max(1).default(0.55),
+});
+
+const _envParsed = EnvSchema.safeParse(process.env);
+if (!_envParsed.success) {
+  console.error("❌ Invalid environment configuration:");
+  for (const issue of _envParsed.error.issues) {
+    console.error(`  ${issue.path.join(".")}: ${issue.message}`);
+  }
+  process.exit(1);
+}
+const ENV = _envParsed.data;
+
+// Config from validated env
+const INTERVAL_MS = ENV.DATA_COLLECT_INTERVAL_MS;
+const TARGET_MARKETS = ENV.TARGET_MARKETS.split(",").map((s) => s.trim().toLowerCase()) as Coin[];
+const WINDOW_DURATION_MINUTES = ENV.WINDOW_DURATION_MINUTES;
+const LOG_DIR = path.resolve(ENV.LOG_DIR);
+const LOG_FILE = path.join(LOG_DIR, `${ENV.LOG_FILE_PREFIX}-${new Date().toISOString().slice(0, 10)}.log`);
+const POLYMARKET_FEE_RATE = ENV.POLYMARKET_FEE_RATE;
+const SIGNAL_THRESHOLD = ENV.SIGNAL_THRESHOLD;
 
 // Track current window per coin to detect window changes
 const currentSlug: Record<string, string> = {};
@@ -95,6 +118,15 @@ async function collectCoin(coin: Coin): Promise<void> {
       const profitIfUp = upWon ? (1 - (entryPrice / exitPrice)) * 100 : -1;
       const profitIfDown = !upWon ? (1 - (exitPrice / entryPrice)) * 100 : -1;
 
+      // Friction costs: spread at entry time + platform fee on notional
+      const spreadAtEntry = (upAsk !== null && upBid !== null) ? (upAsk - upBid) : null;
+      const feePerShare = POLYMARKET_FEE_RATE;  // fee as fraction of $1 notional
+      const spreadCost = spreadAtEntry;
+      const feeCost = feePerShare;
+      const totalFriction = (spreadCost ?? 0) + (feeCost ?? 0);
+      const netProfitIfUp = profitIfUp !== null ? profitIfUp - totalFriction * 100 : null;
+      const netProfitIfDown = profitIfDown !== null ? profitIfDown - totalFriction * 100 : null;
+
       insertWindowSummary({
         coin,
         slug: prevSlug,
@@ -110,6 +142,10 @@ async function collectCoin(coin: Coin): Promise<void> {
         upWon,
         profitIfUp,
         profitIfDown,
+        netProfitIfUp,
+        netProfitIfDown,
+        spreadCost,
+        feeCost,
         createdAt: Date.now(),
       });
 
@@ -136,7 +172,6 @@ async function collectCoin(coin: Coin): Promise<void> {
   const regimeInfo = detectRegime(candles);
 
   // Record signals (first time price exceeds threshold)
-  const SIGNAL_THRESHOLD = 0.55;
   if (upBid !== null && upBid > SIGNAL_THRESHOLD && !signalUp[slug]) {
     signalUp[slug] = { price: upBid, time: Date.now() };
     log(`[${coin}] SIGNAL: UP > ${SIGNAL_THRESHOLD} (${upBid.toFixed(3)}) at ${slug}`);
