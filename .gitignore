@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+data/*.sqlite3
+logs/
+.DS_Store
+*.tar.gz
