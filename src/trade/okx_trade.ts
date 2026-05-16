@@ -58,7 +58,7 @@ async function okxRequest<T = any>(
   };
 
   if (USE_SIMULATED && needSimulated) {
-    headers["x-simulated-trading"] = "true";
+    headers["x-simulated-trading"] = "1";
   }
 
   const url = OKX_API + path;
