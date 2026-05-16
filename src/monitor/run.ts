@@ -1,16 +1,15 @@
 /**
  * Data collection runner + strategy signal generator
  * Phase 1: polls Polymarket + OKX every N ms, stores to SQLite
- * Phase 2: computes TA signals, regime, trade signals
+ * Phase 2: computes TA signals, regime detection
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { pollPolymarket } from "./polymarket.js";
 import { fetchBtcPrice } from "./okx.js";
+import { fetchOkxKlines, okxToBinanceCandle } from "./okx_klines.js";
 import { insertTick, insertWindowSummary, getStats, closeDb } from "./storage.js";
-import { fetchKlines } from "./binance.js";
-import { scoreStrategy, calcUpPriceRatio } from "../strategy/scoring.js";
 import { detectRegime } from "../strategy/regime.js";
 import type { Tick, Coin } from "../types.js";
 
@@ -42,6 +41,10 @@ function log(msg: string): void {
   fs.appendFileSync(LOG_FILE, line + "\n");
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Main collection loop for a single coin
  */
@@ -53,15 +56,15 @@ async function collectCoin(coin: Coin): Promise<void> {
     return;
   }
 
-  const { slug, endTimestamp, upBid, upAsk, downBid, downAsk, marketClosed } = result;
+  const { slug, endTimestamp, upBid, upAsk, downBid, downAsk } = result;
 
-  // Fetch OKX BTC price + Binance klines in parallel
-  const [btcPrice, candles] = await Promise.all([
+  // Fetch OKX BTC price + klines in parallel
+  const [btcPrice, okxRaw] = await Promise.all([
     fetchBtcPrice(),
-    WINDOW_DURATION_MINUTES <= 15
-      ? fetchKlines("1m", 60).catch(() => [] as any[])
-      : fetchKlines("5m", 30).catch(() => [] as any[]),
+    fetchOkxKlines(WINDOW_DURATION_MINUTES <= 15 ? "1m" : "5m", 60).catch(() => [] as any[]),
   ]);
+
+  const candles = okxRaw.map(okxToBinanceCandle);
 
   // Record tick
   const tick: Tick = {
@@ -83,7 +86,6 @@ async function collectCoin(coin: Coin): Promise<void> {
   if (prevSlug && prevSlug !== slug) {
     log(`[${coin}] Window changed: ${prevSlug} → ${slug}`);
 
-    // Compute window summary for the closed window
     if (prevSlug in windowStartPrice && btcPrice) {
       const exitPrice = btcPrice;
       const entryPrice = windowStartPrice[prevSlug];
@@ -114,7 +116,6 @@ async function collectCoin(coin: Coin): Promise<void> {
       log(`[${coin}] Window closed: UP ${upWon ? "WON" : "LOST"} | BTC ${entryPrice.toFixed(0)}→${exitPrice.toFixed(0)} (${(btcReturn * 100).toFixed(2)}%)`);
     }
 
-    // Reset state for new window
     delete windowStartPrice[prevSlug];
     delete signalUp[prevSlug];
     delete signalDown[prevSlug];
@@ -130,8 +131,8 @@ async function collectCoin(coin: Coin): Promise<void> {
     windowStartPrice[slug] = btcPrice;
   }
 
-  // --- Strategy scoring (Phase 2) ---
-  const upPriceRatio = calcUpPriceRatio(upBid ?? 0.5);
+  // --- TA + Regime (Phase 2) ---
+  const upPriceRatio = upBid !== null ? Math.abs(upBid - 0.5) / 0.5 : 0;
   const regimeInfo = detectRegime(candles);
 
   // Record signals (first time price exceeds threshold)
@@ -145,19 +146,15 @@ async function collectCoin(coin: Coin): Promise<void> {
     log(`[${coin}] SIGNAL: DOWN > ${SIGNAL_THRESHOLD} (${downBid.toFixed(3)}) at ${slug}`);
   }
 
-  // Log rate (every 12 ticks to avoid spam)
+  // Log rate (every 12 ticks)
   const stats = getStats();
   const minuteStr = new Date().toISOString().slice(11, 16);
-  if (upBid !== null && downBid !== null) {
-    if (stats.tickCount % 12 === 0) {
-      const dir = upBid > 0.5 ? "🟢UP" : upBid < 0.5 ? "🔴DOWN" : "⚪FLAT";
-      const pct = ((upBid - 0.5) * 200).toFixed(1);
-      const btcStr = btcPrice ? ` BTC:$${btcPrice.toLocaleString()}` : "";
-      const regimeStr = ` [${regimeInfo.regime}]`;
-      const ratioStr = ` ratio:${upPriceRatio.toFixed(3)}`;
-      log(`${minuteStr} | ${dir} ${pct}% | UP:$${upBid.toFixed(3)} DN:$${downBid.toFixed(3)}${btcStr}${regimeStr}${ratioStr} | ${slug}`);
-      log(`[${coin}] Stats: ${stats.tickCount} ticks, ${stats.windowCount} windows closed`);
-    }
+  if (upBid !== null && downBid !== null && stats.tickCount % 12 === 0) {
+    const dir = upBid > 0.5 ? "🟢UP" : upBid < 0.5 ? "🔴DOWN" : "⚪FLAT";
+    const pct = ((upBid - 0.5) * 200).toFixed(1);
+    const btcStr = btcPrice ? ` BTC:$${btcPrice.toLocaleString()}` : "";
+    log(`${minuteStr} | ${dir} ${pct}% | UP:$${upBid.toFixed(3)} DN:$${downBid.toFixed(3)}${btcStr} [${regimeInfo.regime}] ratio:${upPriceRatio.toFixed(3)} | ${slug}`);
+    log(`[${coin}] Stats: ${stats.tickCount} ticks, ${stats.windowCount} windows`);
   }
 }
 
@@ -168,7 +165,6 @@ async function main(): Promise<void> {
   log(`CryptoBot collector starting`);
   log(`Markets: ${TARGET_MARKETS.join(", ")} | Interval: ${INTERVAL_MS}ms | Window: ${WINDOW_DURATION_MINUTES}min`);
 
-  // Check API connectivity first
   log("Testing Polymarket connectivity...");
   const testPoly = await pollPolymarket("btc", WINDOW_DURATION_MINUTES);
   if (!testPoly) {
@@ -187,7 +183,6 @@ async function main(): Promise<void> {
 
   log("Starting collection loop...");
 
-  // Collect indefinitely
   let count = 0;
   while (true) {
     for (const coin of TARGET_MARKETS) {
@@ -200,10 +195,6 @@ async function main(): Promise<void> {
     }
     await sleep(INTERVAL_MS);
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Run
