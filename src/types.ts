@@ -63,6 +63,12 @@ export interface StrategySignal {
   coin: Coin;
   direction: "up" | "down" | "none";
   confidence: number;         // 0-1
-  entryPrice: number;          // Expected entry price
+  edge: number;              // model_prob - market_prob
+  upPriceRatio: number;     // |upBid - 0.5| / 0.5
   reason: string;
+  regime: MarketRegime;
+  stage: TradeStage;
 }
+
+export type MarketRegime = "TREND_UP" | "TREND_DOWN" | "RANGE" | "CHOP";
+export type TradeStage = "EARLY" | "MID" | "LATE";

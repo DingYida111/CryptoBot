@@ -1,6 +1,7 @@
 /**
- * Data collection runner
- * Polls Polymarket + OKX every N ms and stores ticks to SQLite
+ * Data collection runner + strategy signal generator
+ * Phase 1: polls Polymarket + OKX every N ms, stores to SQLite
+ * Phase 2: computes TA signals, regime, trade signals
  */
 
 import * as fs from "fs";
@@ -8,6 +9,9 @@ import * as path from "path";
 import { pollPolymarket } from "./polymarket.js";
 import { fetchBtcPrice } from "./okx.js";
 import { insertTick, insertWindowSummary, getStats, closeDb } from "./storage.js";
+import { fetchKlines } from "./binance.js";
+import { scoreStrategy, calcUpPriceRatio } from "../strategy/scoring.js";
+import { detectRegime } from "../strategy/regime.js";
 import type { Tick, Coin } from "../types.js";
 
 // Load .env synchronously
@@ -38,13 +42,6 @@ function log(msg: string): void {
   fs.appendFileSync(LOG_FILE, line + "\n");
 }
 
-function logRate(minuteStr: string, upBid: number, downBid: number, btcPrice: number | null, slug: string): void {
-  const pct = ((upBid - 0.5) * 200).toFixed(1);
-  const dir = upBid > 0.5 ? "🟢UP" : upBid < 0.5 ? "🔴DOWN" : "⚪FLAT";
-  const btcStr = btcPrice ? ` BTC:$${btcPrice.toLocaleString()}` : "";
-  log(`${minuteStr} | ${dir} ${pct}% | UP:$${upBid.toFixed(3)} DN:$${downBid.toFixed(3)}${btcStr} | ${slug}`);
-}
-
 /**
  * Main collection loop for a single coin
  */
@@ -56,10 +53,15 @@ async function collectCoin(coin: Coin): Promise<void> {
     return;
   }
 
-  const { slug, endTimestamp, upBid, upAsk, downBid, downAsk } = result;
+  const { slug, endTimestamp, upBid, upAsk, downBid, downAsk, marketClosed } = result;
 
-  // Fetch OKX BTC price in parallel
-  const btcPrice = await fetchBtcPrice();
+  // Fetch OKX BTC price + Binance klines in parallel
+  const [btcPrice, candles] = await Promise.all([
+    fetchBtcPrice(),
+    WINDOW_DURATION_MINUTES <= 15
+      ? fetchKlines("1m", 60).catch(() => [] as any[])
+      : fetchKlines("5m", 30).catch(() => [] as any[]),
+  ]);
 
   // Record tick
   const tick: Tick = {
@@ -83,11 +85,10 @@ async function collectCoin(coin: Coin): Promise<void> {
 
     // Compute window summary for the closed window
     if (prevSlug in windowStartPrice && btcPrice) {
-      const exitPrice = btcPrice; // Use current price at window end
+      const exitPrice = btcPrice;
       const entryPrice = windowStartPrice[prevSlug];
       const btcReturn = (exitPrice - entryPrice) / entryPrice;
 
-      // Estimate UP/DOWN outcome based on final price direction
       const upWon = btcReturn > 0;
       const profitIfUp = upWon ? (1 - (entryPrice / exitPrice)) * 100 : -1;
       const profitIfDown = !upWon ? (1 - (exitPrice / entryPrice)) * 100 : -1;
@@ -129,23 +130,32 @@ async function collectCoin(coin: Coin): Promise<void> {
     windowStartPrice[slug] = btcPrice;
   }
 
+  // --- Strategy scoring (Phase 2) ---
+  const upPriceRatio = calcUpPriceRatio(upBid ?? 0.5);
+  const regimeInfo = detectRegime(candles);
+
   // Record signals (first time price exceeds threshold)
   const SIGNAL_THRESHOLD = 0.55;
   if (upBid !== null && upBid > SIGNAL_THRESHOLD && !signalUp[slug]) {
     signalUp[slug] = { price: upBid, time: Date.now() };
     log(`[${coin}] SIGNAL: UP > ${SIGNAL_THRESHOLD} (${upBid.toFixed(3)}) at ${slug}`);
   }
-  if (downBid !== null && downBid > SIGNAL_THRESHOLD && !signalDown[slug]) {
+  if (downBid !== null && (1 - downBid) > SIGNAL_THRESHOLD && !signalDown[slug]) {
     signalDown[slug] = { price: downBid, time: Date.now() };
     log(`[${coin}] SIGNAL: DOWN > ${SIGNAL_THRESHOLD} (${downBid.toFixed(3)}) at ${slug}`);
   }
 
-  // Log rate (every 5 ticks to avoid spam)
+  // Log rate (every 12 ticks to avoid spam)
   const stats = getStats();
   const minuteStr = new Date().toISOString().slice(11, 16);
   if (upBid !== null && downBid !== null) {
     if (stats.tickCount % 12 === 0) {
-      logRate(minuteStr, upBid, downBid, btcPrice, slug);
+      const dir = upBid > 0.5 ? "🟢UP" : upBid < 0.5 ? "🔴DOWN" : "⚪FLAT";
+      const pct = ((upBid - 0.5) * 200).toFixed(1);
+      const btcStr = btcPrice ? ` BTC:$${btcPrice.toLocaleString()}` : "";
+      const regimeStr = ` [${regimeInfo.regime}]`;
+      const ratioStr = ` ratio:${upPriceRatio.toFixed(3)}`;
+      log(`${minuteStr} | ${dir} ${pct}% | UP:$${upBid.toFixed(3)} DN:$${downBid.toFixed(3)}${btcStr}${regimeStr}${ratioStr} | ${slug}`);
       log(`[${coin}] Stats: ${stats.tickCount} ticks, ${stats.windowCount} windows closed`);
     }
   }
