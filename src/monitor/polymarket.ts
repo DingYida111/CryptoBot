@@ -166,11 +166,18 @@ export async function fetchTokenIdsForSlug(slug: string): Promise<{
 }
 
 /**
- * Fetch current prices for UP and DOWN tokens
+ * Fetch prices for UP and DOWN tokens.
+ *
+ * Primary: use CLOB /prices endpoint with token_id.
+ * Fallback: extract outcomePrices from Gamma API /events/slug response.
+ * The CLOB /prices endpoint returns "Invalid payload" for certain token
+ * types (e.g. share tokens) — Gamma API outcomePrices handles those cases.
  */
 export async function fetchPrices(tokenIds: {
   upTokenId: string;
   downTokenId: string;
+  conditionId: string;
+  slug: string;
 }): Promise<{
   upBid: number | null;
   upAsk: number | null;
@@ -179,23 +186,54 @@ export async function fetchPrices(tokenIds: {
 } | null> {
   const { upTokenId, downTokenId } = tokenIds;
 
-  // Fetch both prices in parallel
+  // Try CLOB /prices first
   const [upPrices, downPrices] = await Promise.all([
-    fetchTokenPrices(upTokenId),
-    fetchTokenPrices(downTokenId),
+    fetchClobPrices(upTokenId),
+    fetchClobPrices(downTokenId),
   ]);
 
-  if (!upPrices && !downPrices) return null;
+  if (upPrices && downPrices) {
+    return {
+      upBid: upPrices.bid,
+      upAsk: upPrices.ask,
+      downBid: downPrices.bid,
+      downAsk: downPrices.ask,
+    };
+  }
 
-  return {
-    upBid: upPrices?.bid ?? null,
-    upAsk: upPrices?.ask ?? null,
-    downBid: downPrices?.bid ?? null,
-    downAsk: downPrices?.ask ?? null,
-  };
+  // Fallback: extract from Gamma API /events/slug (outcomePrices)
+  // outcomePrices[0] = YES/Up, outcomePrices[1] = NO/Down
+  try {
+    const eventRes = await fetch(`${GAMMA_API}/events/slug/${tokenIds.slug}`);
+    if (eventRes.ok) {
+      const data = await eventRes.json() as any;
+      const market = data.markets?.[0];
+      if (market?.outcomePrices) {
+        let prices: string[];
+        if (typeof market.outcomePrices === "string") {
+          prices = JSON.parse(market.outcomePrices);
+        } else {
+          prices = market.outcomePrices;
+        }
+        // outcomePrices format: ["0.505","0.495"] where [0]=Up, [1]=Down
+        const upPrice = parseFloat(prices[0]);
+        const downPrice = parseFloat(prices[1]);
+        if (!isNaN(upPrice) && !isNaN(downPrice)) {
+          return {
+            upBid: upPrice,
+            upAsk: upPrice,
+            downBid: downPrice,
+            downAsk: downPrice,
+          };
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  return null;
 }
 
-async function fetchTokenPrices(tokenId: string): Promise<{ bid: number; ask: number } | null> {
+async function fetchClobPrices(tokenId: string): Promise<{ bid: number; ask: number } | null> {
   try {
     const url = `${CLOB_API}/prices?token_id=${tokenId}`;
     const response = await fetch(url);
@@ -231,18 +269,19 @@ export async function pollPolymarket(
   const tokenIds = await fetchTokenIdsForSlug(bucket.slug);
   if (!tokenIds) return null;
 
-  const prices = await fetchPrices(tokenIds);
-  if (!prices) return null;
-
-  // Also check if market is closed via Gamma API
+  // Check market closed state from Gamma API (needed for fetchPrices fallback too)
   let marketClosed = false;
+  let eventData: any = null;
   try {
     const eventRes = await fetch(`${GAMMA_API}/events/slug/${bucket.slug}`);
     if (eventRes.ok) {
-      const eventData = await eventRes.json() as any;
+      eventData = await eventRes.json();
       marketClosed = eventData.closed === true;
     }
   } catch { /* ignore */ }
+
+  const prices = await fetchPrices({ ...tokenIds, slug: bucket.slug });
+  if (!prices) return null;
 
   return {
     slug: bucket.slug,
