@@ -10,11 +10,9 @@ import { fetchBtcPrice } from "./okx.js";
 import { insertTick, insertWindowSummary, getStats, closeDb } from "./storage.js";
 import type { Tick, Coin } from "../types.js";
 
-// Load .env
-try {
-  const dotenv = await import("dotenv");
-  dotenv.config();
-} catch {}
+// Load .env synchronously
+import { config as dotenvConfig } from "dotenv";
+dotenvConfig();
 
 // Config from env with defaults
 const INTERVAL_MS = parseInt(process.env.DATA_COLLECT_INTERVAL_MS ?? "5000");
@@ -51,7 +49,6 @@ function logRate(minuteStr: string, upBid: number, downBid: number, btcPrice: nu
  * Main collection loop for a single coin
  */
 async function collectCoin(coin: Coin): Promise<void> {
-  const now = Math.floor(Date.now() / 1000);
   const result = await pollPolymarket(coin, WINDOW_DURATION_MINUTES);
 
   if (!result) {
