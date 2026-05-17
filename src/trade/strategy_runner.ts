@@ -102,8 +102,7 @@ async function evaluateSignal(): Promise<{
   // Score the strategy
   const signal = scoreStrategy(candles, upBid, endTimestamp, {
     ...DEFAULT_SCORING_CONFIG,
-    // Override window duration for scoring
-  });
+  }, WINDOW_DURATION_MINUTES * 60);
 
   return { signal, btcPrice, endTimestamp };
 }

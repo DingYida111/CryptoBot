@@ -56,7 +56,7 @@ function scoreDirection(candles: Candle[]): {
 
   const breakdown: Record<string, number> = {};
   let score = 0;
-  const maxScore = 6; // 6 sub-signals, each 1-3
+  const maxScore = 18; // 6 sub-signals, each 1-3 → max total = 18
 
   const vwap = calcVwap(candles.slice(-30));
   const rsi = calcRsi(candles);
@@ -106,11 +106,10 @@ export function calcUpPriceRatio(upBid: number): number {
 /**
  * Calculate remaining time ratio (0=new market, 1=about to close)
  */
-export function calcTimeRatio(windowEndTimestamp: number): number {
+export function calcTimeRatio(windowEndTimestamp: number, windowDurSeconds: number = 15 * 60): number {
   const nowSec = Date.now() / 1000;
   const remaining = windowEndTimestamp - nowSec;
-  const windowDur = 5 * 60; // 5 minutes
-  const total = windowDur;
+  const total = windowDurSeconds;
   return Math.max(0, Math.min(1, 1 - remaining / total));
 }
 
@@ -119,9 +118,10 @@ export function calcTimeRatio(windowEndTimestamp: number): number {
  */
 export function calcTradeStage(
   windowEndTimestamp: number,
-  config: ScoringConfig
+  config: ScoringConfig,
+  windowDurSeconds: number = 15 * 60
 ): TradeStage {
-  const ratio = calcTimeRatio(windowEndTimestamp);
+  const ratio = calcTimeRatio(windowEndTimestamp, windowDurSeconds);
   if (ratio < config.lateTimeRatio) return "LATE";
   if (ratio < config.earlyTimeRatio) return "MID";
   return "EARLY";
@@ -133,9 +133,10 @@ export function calcTradeStage(
  */
 export function applyTimeAwareness(
   modelProb: number,
-  windowEndTimestamp: number
+  windowEndTimestamp: number,
+  windowDurSeconds: number = 15 * 60
 ): number {
-  const ratio = calcTimeRatio(windowEndTimestamp);
+  const ratio = calcTimeRatio(windowEndTimestamp, windowDurSeconds);
   // Decay: probability moves toward 0.5 as time runs out
   const decay = 1 - Math.pow(ratio, 2);
   return modelProb * decay + 0.5 * (1 - decay);
@@ -149,13 +150,14 @@ export function scoreStrategy(
   candles: Candle[],
   upBid: number,
   windowEndTimestamp: number,
-  config: ScoringConfig = DEFAULT_SCORING_CONFIG
+  config: ScoringConfig = DEFAULT_SCORING_CONFIG,
+  windowDurSeconds: number = 15 * 60
 ): StrategySignal {
   const { score, maxScore, breakdown } = scoreDirection(candles);
   const modelProb = score / maxScore;
 
   // Time-aware probability
-  const decayProb = applyTimeAwareness(modelProb, windowEndTimestamp);
+  const decayProb = applyTimeAwareness(modelProb, windowEndTimestamp, windowDurSeconds);
 
   // Market probability
   const marketProb = upBid;
@@ -169,7 +171,7 @@ export function scoreStrategy(
   const { regime } = regimeInfo;
 
   // Stage
-  const stage = calcTradeStage(windowEndTimestamp, config);
+  const stage = calcTradeStage(windowEndTimestamp, config, windowDurSeconds);
 
   // Direction
   let direction: "up" | "down" | "none" = "none";
@@ -178,7 +180,7 @@ export function scoreStrategy(
   const reasons: string[] = [];
 
   // Entry conditions
-  const timeRatio = calcTimeRatio(windowEndTimestamp);
+  const timeRatio = calcTimeRatio(windowEndTimestamp, windowDurSeconds);
   if (timeRatio > config.entryTimeRatioMin && upPriceRatio >= config.entryPriceRatioMin && upPriceRatio <= config.entryPriceRatioMax) {
     if (edge > config.entryEdgeThreshold && decayProb > config.entryProbMin) {
       direction = "up";
