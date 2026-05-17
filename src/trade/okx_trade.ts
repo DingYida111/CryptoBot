@@ -236,6 +236,29 @@ export async function closeAllPositions(instId: string = "BTC-USDT-SWAP"): Promi
 }
 
 /**
+ * Close a portion of the position (partial profit-taking)
+ * Returns the size actually closed, or 0 if no position
+ */
+export async function closePositionPartially(instId: string = "BTC-USDT-SWAP", sz: string): Promise<string | null> {
+  const positions = await getPositions(instId);
+  const pos = positions[0];
+  if (!pos || parseInt(pos.pos) === 0) return null;
+
+  const actualSz = Math.min(parseInt(sz), parseInt(pos.pos)).toString();
+  if (parseInt(actualSz) === 0) return null;
+
+  if (pos.posSide === "long" || pos.posSide === "net") {
+    const result = await placeOrder({ instId, tdMode: "cross", side: "sell", ordType: "market", sz: actualSz, reduceOnly: true });
+    return result?.sCode === "0" ? actualSz : null;
+  }
+  if (pos.posSide === "short" || pos.posSide === "net") {
+    const result = await placeOrder({ instId, tdMode: "cross", side: "buy", ordType: "market", sz: actualSz, reduceOnly: true });
+    return result?.sCode === "0" ? actualSz : null;
+  }
+  return null;
+}
+
+/**
  * Get pending orders
  */
 export async function getPendingOrders(instId: string = "BTC-USDT-SWAP"): Promise<any[]> {

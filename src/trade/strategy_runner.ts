@@ -7,7 +7,7 @@
  * Usage: npx tsx src/trade/strategy_runner.ts
  */
 
-import { getPositions, closeAllPositions, buyUp, sellDown, getAccountBalance } from "./okx_trade.js";
+import { getPositions, closeAllPositions, closePositionPartially, buyUp, sellDown, getAccountBalance } from "./okx_trade.js";
 import { scoreStrategy, DEFAULT_SCORING_CONFIG, calcTimeRatio } from "../strategy/scoring.js";
 import { fetchOkxKlines, okxToBinanceCandle } from "../monitor/okx_klines.js";
 import { fetchBtcPrice } from "../monitor/okx.js";
@@ -27,6 +27,14 @@ const CLOSE_BEFORE_MINS = parseFloat(process.env.CLOSE_BEFORE_MINS ?? "0.5"); //
 const MAX_HOLDING_MS = parseInt(process.env.MAX_HOLDING_MS ?? (25 * 60 * 1000).toString()); // safety max holding time
 const FLOATING_PROFIT_THRESHOLD_PCT = parseFloat(process.env.FLOATING_PROFIT_THRESHOLD_PCT ?? "0.5"); // % of entry price
 
+// Step-down exit: lock in profits progressively
+// Each step closes a fraction of the position when profit threshold is hit
+const STEP_DOWN_LEVELS: { profitPct: number; closeFraction: number }[] = [
+  { profitPct: 1.0, closeFraction: 0.33 }, // at 1% profit: close 33%
+  { profitPct: 2.0, closeFraction: 0.50 }, // at 2% profit: close 50% of remaining
+  { profitPct: 3.5, closeFraction: 1.00 }, // at 3.5% profit: close rest
+];
+
 // ─── State ────────────────────────────────────────────────────────────────────
 
 interface PositionState {
@@ -36,9 +44,11 @@ interface PositionState {
   slug: string | null;
   windowEndTimestamp: number | null;
   orderId: string | null;
+  originalSize: number | null;   // track original size for step-down calc
+  lastStepIndex: number;          // last step-down level triggered (-1 = none)
 }
 
-let position: PositionState = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null };
+let position: PositionState = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null, originalSize: null, lastStepIndex: -1 };
 let lastSignal: StrategySignal | null = null;
 let lastBtcPrice: number | null = null;
 
@@ -59,7 +69,7 @@ async function syncPosition(): Promise<void> {
     if (position.side !== null) {
       log(`[POS] Flat — no open positions on OKX`);
     }
-    position = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null };
+    position = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null, originalSize: null, lastStepIndex: -1 };
     return;
   }
   const pos = positions[0];
@@ -136,6 +146,8 @@ async function tryOpenPosition(signal: StrategySignal): Promise<boolean> {
         slug: null,
         windowEndTimestamp: null,
         orderId: result.ordId,
+        originalSize: 1,
+        lastStepIndex: -1,
       };
       log(`[TRADE] Opened LONG | ordId=${result.ordId} | BTC≈${lastBtcPrice}`);
       return true;
@@ -151,12 +163,63 @@ async function tryOpenPosition(signal: StrategySignal): Promise<boolean> {
         slug: null,
         windowEndTimestamp: null,
         orderId: result.ordId,
+        originalSize: 1,
+        lastStepIndex: -1,
       };
       log(`[TRADE] Opened SHORT | ordId=${result.ordId} | BTC≈${lastBtcPrice}`);
       return true;
     }
   }
   return false;
+}
+
+// ─── Step-down exit ──────────────────────────────────────────────────────────
+
+async function tryStepDownPosition(signal: StrategySignal): Promise<void> {
+  if (position.side === null || position.originalSize === null) return;
+
+  const floatingPnlPct = position.entryPrice && lastBtcPrice
+    ? (position.side === "long"
+        ? (lastBtcPrice - position.entryPrice) / position.entryPrice * 100
+        : (position.entryPrice - lastBtcPrice) / position.entryPrice * 100)
+    : 0;
+
+  // Find next step to trigger
+  let nextStepIndex = position.lastStepIndex + 1;
+  if (nextStepIndex >= STEP_DOWN_LEVELS.length) return;
+
+  const nextStep = STEP_DOWN_LEVELS[nextStepIndex];
+  if (floatingPnlPct < nextStep.profitPct) return;
+
+  // Get current position size from OKX to calculate partial close
+  const positions = await getPositions("BTC-USDT-SWAP");
+  const pos = positions[0];
+  if (!pos || parseInt(pos.pos) === 0) return;
+
+  const currentSize = parseInt(pos.pos);
+  const toClose = Math.max(1, Math.floor(currentSize * nextStep.closeFraction));
+
+  if (!ENABLE_TRADING) {
+    log(`[SIM] Step-down #${nextStepIndex + 1}: would close ${toClose} of ${currentSize} @ profit ${floatingPnlPct.toFixed(3)}%`);
+    position.lastStepIndex = nextStepIndex;
+    return;
+  }
+
+  const closed = await closePositionPartially("BTC-USDT-SWAP", toClose.toString());
+  if (closed) {
+    log(`[TRADE] Step-down #${nextStepIndex + 1}: closed ${closed}/${currentSize} contracts @ profit ${floatingPnlPct.toFixed(3)}%`);
+    position.lastStepIndex = nextStepIndex;
+
+    // If no positions left, reset
+    const remaining = await getPositions("BTC-USDT-SWAP");
+    if (!remaining.length || parseInt(remaining[0].pos) === 0) {
+      const pnl = position.entryPrice && lastBtcPrice
+        ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice)
+        : 0;
+      log(`[TRADE] All closed | PnL≈${pnl.toFixed(2)} (BTC ${position.entryPrice}→${lastBtcPrice})`);
+      position = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null, originalSize: null, lastStepIndex: -1 };
+    }
+  }
 }
 
 // ─── Exit logic ───────────────────────────────────────────────────────────────
@@ -216,7 +279,7 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
     : 0;
   log(`[TRADE] Closed ${position.side?.toUpperCase()} | PnL≈${pnl.toFixed(2)} (BTC ${position.entryPrice}→${lastBtcPrice})`);
 
-  position = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null };
+  position = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null, originalSize: null, lastStepIndex: -1 };
   return true;
 }
 
@@ -264,7 +327,9 @@ async function main(): Promise<void> {
       log(`${dir} | edge=${edge} | conf=${signal.confidence.toFixed(3)} | regime=${signal.regime} | stage=${signal.stage} | ratio=${signal.upPriceRatio.toFixed(3)} | BTC=$${btcPrice}`);
 
       if (position.side !== null) {
-        // Try to close if in a position
+        // Try step-down exits first (lock in partial profits)
+        await tryStepDownPosition(signal);
+        // Then try to close if in a position
         const closed = await tryClosePosition(signal);
         if (closed) {
           // Position just closed — don't open a new one immediately
