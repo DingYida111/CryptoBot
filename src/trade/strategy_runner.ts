@@ -24,6 +24,8 @@ const SIGNAL_INTERVAL_MS = parseInt(process.env.SIGNAL_INTERVAL_MS ?? "10000");
 const MAX_POSITION_SIZE = parseInt(process.env.MAX_POSITION_SIZE ?? "1");
 const ENABLE_TRADING = process.env.ENABLE_TRADING !== "false"; // default true for paper trading
 const CLOSE_BEFORE_MINS = parseFloat(process.env.CLOSE_BEFORE_MINS ?? "0.5"); // close N mins before expiry
+const MAX_HOLDING_MS = parseInt(process.env.MAX_HOLDING_MS ?? (25 * 60 * 1000).toString()); // safety max holding time
+const FLOATING_PROFIT_THRESHOLD_PCT = parseFloat(process.env.FLOATING_PROFIT_THRESHOLD_PCT ?? "0.5"); // % of entry price
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -164,23 +166,49 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
 
   const nowSec = Date.now() / 1000;
   const remaining = (position.windowEndTimestamp ?? 0) - nowSec;
+  const holdDurationMs = position.entryTime ? Date.now() - position.entryTime : 0;
   const closeBeforeSec = CLOSE_BEFORE_MINS * 60;
 
-  // Exit reason: window closing soon, or regime shifted against us
+  // Floating PnL
+  const floatingPnlPct = position.entryPrice && lastBtcPrice
+    ? (position.side === "long"
+        ? (lastBtcPrice - position.entryPrice) / position.entryPrice * 100
+        : (position.entryPrice - lastBtcPrice) / position.entryPrice * 100)
+    : 0;
+  const inProfit = floatingPnlPct >= FLOATING_PROFIT_THRESHOLD_PCT;
+
+  // Regime aligned: trend direction matches our position
+  const regimeAligned = (position.side === "long" && signal.regime === "TREND_UP")
+                      || (position.side === "short" && signal.regime === "TREND_DOWN");
+
+  // Exit conditions (priority order):
+  // 1. Window closing soon — always exit
+  // 2. Regime shifted against us — exit unless in strong profit
+  // 3. Max holding time exceeded — exit only if not in profit and regime not aligned
   const windowClosingSoon = remaining < closeBeforeSec && remaining > 0;
   const regimeShifted = (position.side === "long" && signal.regime === "TREND_DOWN")
                      || (position.side === "short" && signal.regime === "TREND_UP");
+  const maxHoldingExceeded = holdDurationMs > MAX_HOLDING_MS;
 
-  if (!windowClosingSoon && !regimeShifted && remaining > 0) {
+  // Skip exit if max holding exceeded but we're in profit AND regime still aligned — let it ride
+  if (maxHoldingExceeded && inProfit && regimeAligned) {
     return false;
   }
+
+  if (!windowClosingSoon && !regimeShifted && !maxHoldingExceeded) {
+    return false;
+  }
+
+  const exitReason = windowClosingSoon ? "window_closing"
+    : regimeShifted ? "regime_shift"
+    : "max_holding";
 
   if (!ENABLE_TRADING) {
-    log(`[SIM] Would close: reason=${windowClosingSoon ? "window_closing" : "regime_shift"} remaining=${remaining.toFixed(0)}s`);
+    log(`[SIM] Would close: reason=${exitReason} remaining=${remaining.toFixed(0)}s holdDuration=${(holdDurationMs/60000).toFixed(1)}m profit=${floatingPnlPct.toFixed(3)}%`);
     return false;
   }
 
-  log(`[TRADE] closeAllPositions — reason=${windowClosingSoon ? "window_closing" : "regime_shift"} remaining=${remaining.toFixed(0)}s`);
+  log(`[TRADE] closeAllPositions — reason=${exitReason} remaining=${remaining.toFixed(0)}s holdDuration=${(holdDurationMs/60000).toFixed(1)}m profit=${floatingPnlPct.toFixed(3)}%`);
   await closeAllPositions("BTC-USDT-SWAP");
 
   const pnl = position.entryPrice && lastBtcPrice
