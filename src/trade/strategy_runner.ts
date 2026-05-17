@@ -28,11 +28,10 @@ const MAX_HOLDING_MS = parseInt(process.env.MAX_HOLDING_MS ?? (25 * 60 * 1000).t
 const FLOATING_PROFIT_THRESHOLD_PCT = parseFloat(process.env.FLOATING_PROFIT_THRESHOLD_PCT ?? "0.5"); // % of entry price
 
 // Step-down exit: lock in profits progressively
-// Each step closes a fraction of the position when profit threshold is hit
+// Each step closes a fraction of the ORIGINAL position
 const STEP_DOWN_LEVELS: { profitPct: number; closeFraction: number }[] = [
-  { profitPct: 1.0, closeFraction: 0.33 }, // at 1% profit: close 33%
-  { profitPct: 2.0, closeFraction: 0.50 }, // at 2% profit: close 50% of remaining
-  { profitPct: 3.5, closeFraction: 1.00 }, // at 3.5% profit: close rest
+  { profitPct: 1.0, closeFraction: 0.25 }, // at 1% profit: close 25% of original
+  { profitPct: 2.0, closeFraction: 0.25 }, // at 2% profit: close 25% of original (remaining 50% follows normal exit)
 ];
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -197,7 +196,9 @@ async function tryStepDownPosition(signal: StrategySignal): Promise<void> {
   if (!pos || parseInt(pos.pos) === 0) return;
 
   const currentSize = parseInt(pos.pos);
-  const toClose = Math.max(1, Math.floor(currentSize * nextStep.closeFraction));
+  // Calculate size based on ORIGINAL position, not current (which may be reduced already)
+  const originalSize = position.originalSize ?? currentSize;
+  const toClose = Math.min(currentSize, Math.max(1, Math.floor(originalSize * nextStep.closeFraction)));
 
   if (!ENABLE_TRADING) {
     log(`[SIM] Step-down #${nextStepIndex + 1}: would close ${toClose} of ${currentSize} @ profit ${floatingPnlPct.toFixed(3)}%`);
