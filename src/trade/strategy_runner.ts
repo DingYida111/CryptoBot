@@ -80,6 +80,7 @@ async function syncPosition(): Promise<void> {
 async function evaluateSignal(): Promise<{
   signal: StrategySignal;
   btcPrice: number;
+  endTimestamp: number;
 } | null> {
   const pollResult = await pollPolymarket("btc", WINDOW_DURATION_MINUTES);
   if (!pollResult || pollResult.marketClosed) {
@@ -104,7 +105,7 @@ async function evaluateSignal(): Promise<{
     // Override window duration for scoring
   });
 
-  return { signal, btcPrice };
+  return { signal, btcPrice, endTimestamp };
 }
 
 // ─── Entry logic ──────────────────────────────────────────────────────────────
@@ -228,9 +229,7 @@ async function main(): Promise<void> {
 
       const { signal, btcPrice } = evalResult;
       lastSignal = signal;
-      position.windowEndTimestamp = signal.reason.includes("stage=")
-        ? 0  // Will be updated when we have the actual window end
-        : 0;
+      position.windowEndTimestamp = evalResult.endTimestamp;
 
       // Log signal every tick
       const dir = signal.direction === "none" ? "—" : signal.direction.toUpperCase();
