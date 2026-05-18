@@ -43,9 +43,14 @@ async function okxRequest<T = any>(
   body: string = "",
   needSimulated: boolean = false
 ): Promise<T> {
-  const key = process.env.OKX_API_KEY ?? "a72b9df1-337b-4358-b4a3-ce234409d329";
-  const secret = process.env.OKX_API_SECRET ?? "23FF3B339570F13AAD8881743CDF58AD";
-  const passphrase = process.env.OKX_API_PASSPHRASE ?? "SH1218dyd!";
+  const key = process.env.OKX_API_KEY;
+  const secret = process.env.OKX_API_SECRET;
+  const passphrase = process.env.OKX_API_PASSPHRASE;
+  if (!key || !secret || !passphrase) {
+    throw new Error(
+      "[OKX] Credentials not configured. Set OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE as environment variables."
+    );
+  }
 
   const timestamp = new Date().toISOString();
   const signature = await sign(timestamp, method, path, body, secret);
