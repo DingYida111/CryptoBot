@@ -310,17 +310,23 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
                      || (position.side === "short" && signal.regime === "TREND_UP");
   const maxHoldingExceeded = holdDurationMs > MAX_HOLDING_MS;
 
+  // Signal reversal: model now explicitly calls the opposite direction — exit promptly
+  // Only trigger if we're not already in profit (avoid cutting winners on noise)
+  const signalReversed = (position.side === "long" && signal.direction === "down")
+                      || (position.side === "short" && signal.direction === "up");
+
   // Skip exit if max holding exceeded but we're in profit AND regime still aligned — let it ride
   if (maxHoldingExceeded && inProfit && regimeAligned) {
     return false;
   }
 
-  if (!stopLossHit && !windowClosingSoon && !regimeShifted && !maxHoldingExceeded) {
+  if (!stopLossHit && !windowClosingSoon && !regimeShifted && !signalReversed && !maxHoldingExceeded) {
     return false;
   }
 
   const exitReason = stopLossHit      ? `stop_loss(${floatingPnlPct.toFixed(3)}%)`
     : windowClosingSoon ? "window_closing"
+    : signalReversed    ? `signal_reversed(${signal.direction})`
     : regimeShifted     ? "regime_shift"
     : "max_holding";
 
