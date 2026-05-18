@@ -302,32 +302,39 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
 
   // Exit conditions (priority order):
   // 1. Stop-loss hit — always exit immediately
-  // 2. Window closing soon — always exit
+  // 2. Signal reversal — model explicitly calls opposite direction
   // 3. Regime shifted against us — exit
-  // 4. Max holding time exceeded — exit only if not in profit and regime not aligned
-  const windowClosingSoon = remaining <= 0 || remaining < closeBeforeSec;
+  // 4. Window expired with no continuing signal — exit (avoid naked hold)
+  // 5. Max holding time exceeded — safety net
   const regimeShifted = (position.side === "long" && signal.regime === "TREND_DOWN")
                      || (position.side === "short" && signal.regime === "TREND_UP");
   const maxHoldingExceeded = holdDurationMs > MAX_HOLDING_MS;
 
-  // Signal reversal: model now explicitly calls the opposite direction — exit promptly
-  // Only trigger if we're not already in profit (avoid cutting winners on noise)
+  // Signal reversal: model explicitly calls the opposite direction
   const signalReversed = (position.side === "long" && signal.direction === "down")
                       || (position.side === "short" && signal.direction === "up");
+
+  // Cross-window: only close at window expiry if signal has gone flat (no direction).
+  // If signal continues in the same direction, hold through the new window — avoids
+  // paying round-trip fees just to re-open the same position a tick later.
+  const windowExpired = remaining <= 0 || remaining < closeBeforeSec;
+  const signalContinues = (position.side === "long" && signal.direction === "up")
+                       || (position.side === "short" && signal.direction === "down");
+  const windowExpiredNoSignal = windowExpired && !signalContinues;
 
   // Skip exit if max holding exceeded but we're in profit AND regime still aligned — let it ride
   if (maxHoldingExceeded && inProfit && regimeAligned) {
     return false;
   }
 
-  if (!stopLossHit && !windowClosingSoon && !regimeShifted && !signalReversed && !maxHoldingExceeded) {
+  if (!stopLossHit && !windowExpiredNoSignal && !regimeShifted && !signalReversed && !maxHoldingExceeded) {
     return false;
   }
 
-  const exitReason = stopLossHit      ? `stop_loss(${floatingPnlPct.toFixed(3)}%)`
-    : windowClosingSoon ? "window_closing"
-    : signalReversed    ? `signal_reversed(${signal.direction})`
-    : regimeShifted     ? "regime_shift"
+  const exitReason = stopLossHit          ? `stop_loss(${floatingPnlPct.toFixed(3)}%)`
+    : signalReversed        ? `signal_reversed(${signal.direction})`
+    : windowExpiredNoSignal ? `window_expired(no_signal)`
+    : regimeShifted         ? "regime_shift"
     : "max_holding";
 
   if (!ENABLE_TRADING) {
