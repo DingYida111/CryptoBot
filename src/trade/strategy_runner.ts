@@ -15,6 +15,7 @@ import { fetchBtcPrice } from "../monitor/okx.js";
 import { pollPolymarket } from "../monitor/polymarket.js";
 import { config as dotenvConfig } from "dotenv";
 import type { StrategySignal } from "../types.js";
+import type { Candle } from "../monitor/binance.js";
 
 dotenvConfig();
 
@@ -27,6 +28,8 @@ const ENABLE_TRADING = process.env.ENABLE_TRADING !== "false"; // default true f
 const CLOSE_BEFORE_MINS = parseFloat(process.env.CLOSE_BEFORE_MINS ?? "0.5"); // close N mins before expiry
 const MAX_HOLDING_MS = parseInt(process.env.MAX_HOLDING_MS ?? (25 * 60 * 1000).toString()); // safety max holding time
 const FLOATING_PROFIT_THRESHOLD_PCT = parseFloat(process.env.FLOATING_PROFIT_THRESHOLD_PCT ?? "0.5"); // % of entry price
+const CONTRACT_SIZE = 0.01;        // BTC-USDT-SWAP: 1 contract = 0.01 BTC
+const TAKER_FEE_RATE = 0.0005;     // OKX taker fee 0.05% per side
 
 // Risk management
 const STOP_LOSS_PCT = parseFloat(process.env.STOP_LOSS_PCT ?? "0.3");       // hard stop: -0.3% of entry
@@ -63,6 +66,7 @@ const FLAT_POSITION: PositionState = {
 let position: PositionState = { ...FLAT_POSITION };
 let lastSignal: StrategySignal | null = null;
 let lastBtcPrice: number | null = null;
+let lastCandles: Candle[] = [];
 
 function log(msg: string): void {
   console.error(`[${new Date().toISOString()}] ${msg}`);
@@ -125,6 +129,7 @@ async function evaluateSignal(): Promise<{
   const barLimit = WINDOW_DURATION_MINUTES <= 15 ? "1m" : "5m";
   const klines = await fetchOkxKlines(barLimit, 60).catch(() => []);
   const candles = klines.map(okxToBinanceCandle);
+  lastCandles = candles;
 
   // Get Kronos ML signal (non-blocking, falls back to null if unavailable)
   const kronosResult = await getKronosProb(candles);
@@ -144,6 +149,19 @@ async function evaluateSignal(): Promise<{
 // ─── Entry logic ──────────────────────────────────────────────────────────────
 
 async function tryOpenPosition(signal: StrategySignal, endTimestamp: number): Promise<boolean> {
+  // Fee-spread gate: skip if expected profit < round-trip fees
+  const feeRoundTrip = (lastBtcPrice ?? 76000) * CONTRACT_SIZE * TAKER_FEE_RATE * 2;
+  const last15 = lastCandles.slice(-15);
+  const range15min = last15.length >= 5
+    ? Math.max(...last15.map(c => c.high)) - Math.min(...last15.map(c => c.low))
+    : (lastBtcPrice ?? 76000) * 0.002;
+  const directionalEdge = Math.max(0, (signal.confidence - 0.5) * 2);
+  const expectedProfit = directionalEdge * range15min * CONTRACT_SIZE;
+  if (expectedProfit < feeRoundTrip) {
+    log(`[SKIP] EV≈${expectedProfit.toFixed(4)} < fee_spread=${feeRoundTrip.toFixed(4)} | conf=${signal.confidence.toFixed(3)} range=${range15min.toFixed(0)}`);
+    return false;
+  }
+
   if (!ENABLE_TRADING) {
     log(`[SIM] Would open: ${signal.direction} edge=${signal.edge.toFixed(3)} prob=${signal.confidence.toFixed(3)}`);
     return false;
@@ -242,9 +260,9 @@ async function tryStepDownPosition(signal: StrategySignal): Promise<void> {
     const remaining = await getPositions("BTC-USDT-SWAP");
     if (!remaining.length || parseInt(remaining[0].pos) === 0) {
       const pnl = position.entryPrice && lastBtcPrice
-        ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice)
+        ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice) * CONTRACT_SIZE
         : 0;
-      log(`[TRADE] All closed | PnL≈${pnl.toFixed(2)} (BTC ${position.entryPrice}→${lastBtcPrice})`);
+      log(`[TRADE] All closed | PnL≈${pnl.toFixed(4)} USD (BTC ${position.entryPrice}→${lastBtcPrice})`);
       position = { ...FLAT_POSITION };
     }
   }
@@ -315,9 +333,9 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
   await closeAllPositions("BTC-USDT-SWAP");
 
   const pnl = position.entryPrice && lastBtcPrice
-    ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice)
+    ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice) * CONTRACT_SIZE
     : 0;
-  log(`[TRADE] Closed ${position.side?.toUpperCase()} | PnL≈${pnl.toFixed(2)} (BTC ${position.entryPrice}→${lastBtcPrice})`);
+  log(`[TRADE] Closed ${position.side?.toUpperCase()} | PnL≈${pnl.toFixed(4)} USD (BTC ${position.entryPrice}→${lastBtcPrice})`);
 
   position = { ...FLAT_POSITION };
   return true;

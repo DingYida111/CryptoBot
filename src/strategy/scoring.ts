@@ -39,7 +39,7 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
   entryPriceRatioMin: 0.01,
   entryPriceRatioMax: 0.40,
   entryEdgeThreshold: 0.05,
-  entryProbMin: 0.55,
+  entryProbMin: 0.65,
   exitPriceRatioRange: [0.35, 0.5],
   exitTimeRatio: 0.85,
   earlyTimeRatio: 0.7,
