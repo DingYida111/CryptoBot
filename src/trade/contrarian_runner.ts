@@ -86,6 +86,7 @@ function sleep(ms: number): Promise<void> {
 // ─── Position sync ────────────────────────────────────────────────────────────
 
 async function syncPosition(): Promise<void> {
+  if (!ENABLE_TRADING) return; // simulation mode: skip OKX sync
   const positions = await getPositions("BTC-USDT-SWAP");
   const activePositions = positions.filter((p) => parseInt(p.pos) !== 0);
   if (!activePositions.length) {
@@ -352,12 +353,16 @@ async function main(): Promise<void> {
   await syncPosition();
 
   // Test connectivity
-  const balance = await getAccountBalance();
-  if (balance && balance[0]) {
-    const bal = balance[0];
-    const usdtBal = (bal as any).details?.find((d: any) => d.ccy === "USDT");
-    const availEq = usdtBal?.availEq ?? (bal as any).totalEq ?? "N/A";
-    log(`Balance: availEq=${availEq} USDT`);
+  if (ENABLE_TRADING) {
+    const balance = await getAccountBalance();
+    if (balance && balance[0]) {
+      const bal = balance[0];
+      const usdtBal = (bal as any).details?.find((d: any) => d.ccy === "USDT");
+      const availEq = usdtBal?.availEq ?? (bal as any).totalEq ?? "N/A";
+      log(`Balance: availEq=${availEq} USDT`);
+    }
+  } else {
+    log(`Balance: simulation mode (no OKX connection)`);
   }
 
   log(`Starting contrarian signal loop...`);
