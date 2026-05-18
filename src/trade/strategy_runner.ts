@@ -38,8 +38,8 @@ const BREAK_EVEN_PCT = parseFloat(process.env.BREAK_EVEN_PCT ?? "0.1");     // a
 // Step-down exit: lock in profits progressively
 // Each step closes a fraction of the ORIGINAL position
 const STEP_DOWN_LEVELS: { profitPct: number; closeFraction: number }[] = [
-  { profitPct: 1.0, closeFraction: 0.25 }, // at 1% profit: close 25% of original
-  { profitPct: 2.0, closeFraction: 0.25 }, // at 2% profit: close 25% of original (remaining 50% follows normal exit)
+  { profitPct: 0.3, closeFraction: 0.25 }, // at 1% profit: close 25% of original
+  { profitPct: 0.7, closeFraction: 0.25 }, // at 2% profit: close 25% of original (remaining 50% follows normal exit)
 ];
 
 // ─── State ────────────────────────────────────────────────────────────────────
