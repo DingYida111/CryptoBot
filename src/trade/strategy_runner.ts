@@ -9,6 +9,7 @@
 
 import { getPositions, closeAllPositions, closePositionPartially, buyUp, sellDown, getAccountBalance } from "./okx_trade.js";
 import { scoreStrategy, DEFAULT_SCORING_CONFIG, calcTimeRatio } from "../strategy/scoring.js";
+import { getKronosProb, isKronosReady } from "../strategy/kronos.js";
 import { fetchOkxKlines, okxToBinanceCandle } from "../monitor/okx_klines.js";
 import { fetchBtcPrice } from "../monitor/okx.js";
 import { pollPolymarket } from "../monitor/polymarket.js";
@@ -26,6 +27,10 @@ const ENABLE_TRADING = process.env.ENABLE_TRADING !== "false"; // default true f
 const CLOSE_BEFORE_MINS = parseFloat(process.env.CLOSE_BEFORE_MINS ?? "0.5"); // close N mins before expiry
 const MAX_HOLDING_MS = parseInt(process.env.MAX_HOLDING_MS ?? (25 * 60 * 1000).toString()); // safety max holding time
 const FLOATING_PROFIT_THRESHOLD_PCT = parseFloat(process.env.FLOATING_PROFIT_THRESHOLD_PCT ?? "0.5"); // % of entry price
+
+// Risk management
+const STOP_LOSS_PCT = parseFloat(process.env.STOP_LOSS_PCT ?? "0.3");       // hard stop: -0.3% of entry
+const BREAK_EVEN_PCT = parseFloat(process.env.BREAK_EVEN_PCT ?? "0.1");     // activate break-even stop once +0.1% profit
 
 // Step-down exit: lock in profits progressively
 // Each step closes a fraction of the ORIGINAL position
@@ -45,9 +50,17 @@ interface PositionState {
   orderId: string | null;
   originalSize: number | null;   // track original size for step-down calc
   lastStepIndex: number;          // last step-down level triggered (-1 = none)
+  stopLossPct: number;            // current stop-loss threshold (may be 0 after break-even)
+  breakEvenActivated: boolean;    // true once break-even stop has been armed
 }
 
-let position: PositionState = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null, originalSize: null, lastStepIndex: -1 };
+const FLAT_POSITION: PositionState = {
+  side: null, entryPrice: null, entryTime: null, slug: null,
+  windowEndTimestamp: null, orderId: null, originalSize: null,
+  lastStepIndex: -1, stopLossPct: STOP_LOSS_PCT, breakEvenActivated: false,
+};
+
+let position: PositionState = { ...FLAT_POSITION };
 let lastSignal: StrategySignal | null = null;
 let lastBtcPrice: number | null = null;
 
@@ -64,19 +77,22 @@ function sleep(ms: number): Promise<void> {
 /** Sync position state from OKX */
 async function syncPosition(): Promise<void> {
   const positions = await getPositions("BTC-USDT-SWAP");
-  if (!positions.length) {
+  // Filter out ghost sz=0 records that OKX retains after closing
+  const activePositions = positions.filter(p => parseInt(p.pos) !== 0);
+  if (!activePositions.length) {
     if (position.side !== null) {
       log(`[POS] Flat — no open positions on OKX`);
     }
-    position = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null, originalSize: null, lastStepIndex: -1 };
+    position = { ...FLAT_POSITION };
     return;
   }
-  const pos = positions[0];
+  const pos = activePositions[0];
   const side = pos.posSide === "long" ? "long" : pos.posSide === "short" ? "short" : (parseInt(pos.pos) > 0 ? "long" : "short");
-  if (position.side !== side || position.entryPrice !== parseFloat(pos.avgPx)) {
+  const avgPx = parseFloat(pos.avgPx) || null;  // guard against empty avgPx → NaN
+  if (position.side !== side || position.entryPrice !== avgPx) {
     log(`[POS] ${side.toUpperCase()} | avgPx=${pos.avgPx} | sz=${pos.pos} | upl=${pos.upl} | liqPx=${pos.liqPx}`);
     position.side = side;
-    position.entryPrice = parseFloat(pos.avgPx);
+    position.entryPrice = avgPx;
     position.entryTime = Date.now();
     position.orderId = null; // OKX doesn't expose posId in position list
   }
@@ -110,17 +126,24 @@ async function evaluateSignal(): Promise<{
   const klines = await fetchOkxKlines(barLimit, 60).catch(() => []);
   const candles = klines.map(okxToBinanceCandle);
 
-  // Score the strategy
+  // Get Kronos ML signal (non-blocking, falls back to null if unavailable)
+  const kronosResult = await getKronosProb(candles);
+  const kronosProb = kronosResult?.probUp ?? null;
+  if (kronosResult) {
+    log(`[Kronos] prob_up=${kronosResult.probUp.toFixed(3)} delta=${kronosResult.deltaPercent.toFixed(4)}% latency=${kronosResult.latencyMs}ms`);
+  }
+
+  // Score the strategy (blends TA + Kronos)
   const signal = scoreStrategy(candles, upBid, endTimestamp, {
     ...DEFAULT_SCORING_CONFIG,
-  }, WINDOW_DURATION_MINUTES * 60);
+  }, WINDOW_DURATION_MINUTES * 60, kronosProb);
 
   return { signal, btcPrice, endTimestamp };
 }
 
 // ─── Entry logic ──────────────────────────────────────────────────────────────
 
-async function tryOpenPosition(signal: StrategySignal): Promise<boolean> {
+async function tryOpenPosition(signal: StrategySignal, endTimestamp: number): Promise<boolean> {
   if (!ENABLE_TRADING) {
     log(`[SIM] Would open: ${signal.direction} edge=${signal.edge.toFixed(3)} prob=${signal.confidence.toFixed(3)}`);
     return false;
@@ -143,12 +166,14 @@ async function tryOpenPosition(signal: StrategySignal): Promise<boolean> {
         entryPrice: lastBtcPrice,
         entryTime: Date.now(),
         slug: null,
-        windowEndTimestamp: null,
+        windowEndTimestamp: endTimestamp ?? null,
         orderId: result.ordId,
         originalSize: 1,
         lastStepIndex: -1,
+        stopLossPct: STOP_LOSS_PCT,
+        breakEvenActivated: false,
       };
-      log(`[TRADE] Opened LONG | ordId=${result.ordId} | BTC≈${lastBtcPrice}`);
+      log(`[TRADE] Opened LONG | ordId=${result.ordId} | BTC≈${lastBtcPrice} | stop=${STOP_LOSS_PCT}%`);
       return true;
     }
   } else if (signal.direction === "down") {
@@ -160,12 +185,14 @@ async function tryOpenPosition(signal: StrategySignal): Promise<boolean> {
         entryPrice: lastBtcPrice,
         entryTime: Date.now(),
         slug: null,
-        windowEndTimestamp: null,
+        windowEndTimestamp: endTimestamp ?? null,
         orderId: result.ordId,
         originalSize: 1,
         lastStepIndex: -1,
+        stopLossPct: STOP_LOSS_PCT,
+        breakEvenActivated: false,
       };
-      log(`[TRADE] Opened SHORT | ordId=${result.ordId} | BTC≈${lastBtcPrice}`);
+      log(`[TRADE] Opened SHORT | ordId=${result.ordId} | BTC≈${lastBtcPrice} | stop=${STOP_LOSS_PCT}%`);
       return true;
     }
   }
@@ -218,7 +245,7 @@ async function tryStepDownPosition(signal: StrategySignal): Promise<void> {
         ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice)
         : 0;
       log(`[TRADE] All closed | PnL≈${pnl.toFixed(2)} (BTC ${position.entryPrice}→${lastBtcPrice})`);
-      position = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null, originalSize: null, lastStepIndex: -1 };
+      position = { ...FLAT_POSITION };
     }
   }
 }
@@ -241,15 +268,26 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
     : 0;
   const inProfit = floatingPnlPct >= FLOATING_PROFIT_THRESHOLD_PCT;
 
+  // ── P2: Break-even stop — arm once floatingPnl crosses BREAK_EVEN_PCT ──────
+  if (!position.breakEvenActivated && floatingPnlPct >= BREAK_EVEN_PCT) {
+    position.breakEvenActivated = true;
+    position.stopLossPct = 0;  // stop moves to entry price
+    log(`[RISK] Break-even stop armed @ entry=${position.entryPrice} (profit=${floatingPnlPct.toFixed(3)}%)`);
+  }
+
+  // ── P1: Hard stop-loss ────────────────────────────────────────────────────
+  const stopLossHit = floatingPnlPct <= -position.stopLossPct;
+
   // Regime aligned: trend direction matches our position
   const regimeAligned = (position.side === "long" && signal.regime === "TREND_UP")
                       || (position.side === "short" && signal.regime === "TREND_DOWN");
 
   // Exit conditions (priority order):
-  // 1. Window closing soon — always exit
-  // 2. Regime shifted against us — exit unless in strong profit
-  // 3. Max holding time exceeded — exit only if not in profit and regime not aligned
-  const windowClosingSoon = remaining < closeBeforeSec && remaining > 0;
+  // 1. Stop-loss hit — always exit immediately
+  // 2. Window closing soon — always exit
+  // 3. Regime shifted against us — exit
+  // 4. Max holding time exceeded — exit only if not in profit and regime not aligned
+  const windowClosingSoon = remaining <= 0 || remaining < closeBeforeSec;
   const regimeShifted = (position.side === "long" && signal.regime === "TREND_DOWN")
                      || (position.side === "short" && signal.regime === "TREND_UP");
   const maxHoldingExceeded = holdDurationMs > MAX_HOLDING_MS;
@@ -259,12 +297,13 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
     return false;
   }
 
-  if (!windowClosingSoon && !regimeShifted && !maxHoldingExceeded) {
+  if (!stopLossHit && !windowClosingSoon && !regimeShifted && !maxHoldingExceeded) {
     return false;
   }
 
-  const exitReason = windowClosingSoon ? "window_closing"
-    : regimeShifted ? "regime_shift"
+  const exitReason = stopLossHit      ? `stop_loss(${floatingPnlPct.toFixed(3)}%)`
+    : windowClosingSoon ? "window_closing"
+    : regimeShifted     ? "regime_shift"
     : "max_holding";
 
   if (!ENABLE_TRADING) {
@@ -280,7 +319,7 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
     : 0;
   log(`[TRADE] Closed ${position.side?.toUpperCase()} | PnL≈${pnl.toFixed(2)} (BTC ${position.entryPrice}→${lastBtcPrice})`);
 
-  position = { side: null, entryPrice: null, entryTime: null, slug: null, windowEndTimestamp: null, orderId: null, originalSize: null, lastStepIndex: -1 };
+  position = { ...FLAT_POSITION };
   return true;
 }
 
@@ -289,6 +328,7 @@ async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
 async function main(): Promise<void> {
   log(`Strategy runner starting`);
   log(`Window: ${WINDOW_DURATION_MINUTES}min | Interval: ${SIGNAL_INTERVAL_MS}ms | Trading: ${ENABLE_TRADING}`);
+  log(`Risk: stop_loss=${STOP_LOSS_PCT}% | break_even=${BREAK_EVEN_PCT}%`);
 
   // Sync initial position
   await syncPosition();
@@ -303,6 +343,10 @@ async function main(): Promise<void> {
   } else {
     log(`WARNING: Could not fetch OKX balance`);
   }
+
+  // Check Kronos service
+  const kronosReady = await isKronosReady();
+  log(`Kronos service: ${kronosReady ? "OK (ML signals enabled)" : "unavailable (TA-only fallback)"}`);
 
   log(`Starting signal loop...`);
 
@@ -338,7 +382,7 @@ async function main(): Promise<void> {
       } else {
         // Try to open if flat
         if (signal.direction !== "none") {
-          await tryOpenPosition(signal);
+          await tryOpenPosition(signal, evalResult.endTimestamp);
         }
       }
     } catch (err) {

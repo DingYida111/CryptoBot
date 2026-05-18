@@ -69,6 +69,22 @@ function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_window_slug ON window_summaries(slug);
     CREATE INDEX IF NOT EXISTS idx_window_coin ON window_summaries(coin);
   `);
+
+  // Migrate: add any columns that exist in the schema but not in the live table
+  const migrateColumns: Array<[string, string]> = [
+    ["net_profit_if_up",   "REAL"],
+    ["net_profit_if_down", "REAL"],
+    ["spread_cost",        "REAL"],
+    ["fee_cost",           "REAL"],
+  ];
+  const existing = new Set(
+    (db.prepare("PRAGMA table_info(window_summaries)").all() as any[]).map((r: any) => r.name)
+  );
+  for (const [col, type] of migrateColumns) {
+    if (!existing.has(col)) {
+      db.exec(`ALTER TABLE window_summaries ADD COLUMN ${col} ${type}`);
+    }
+  }
 }
 
 export function insertTick(tick: Tick): void {

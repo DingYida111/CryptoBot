@@ -1,7 +1,7 @@
 /**
  * Strategy scoring engine
- * Combines TA signals + Polymarket price + time awareness
- * Produces a model probability and decides whether to place a trade
+ * Combines TA signals + Kronos ML model + Polymarket price + time awareness
+ * Produces a blended model probability and decides whether to place a trade
  */
 
 import type { Candle } from "../monitor/binance.js";
@@ -29,19 +29,22 @@ export interface ScoringConfig {
   // Stage thresholds (remaining time ratios)
   earlyTimeRatio: number;      // EARLY: > this
   lateTimeRatio: number;       // LATE: < this
+  // Kronos blend weight (0 = TA only, 1 = Kronos only)
+  kronosWeight: number;
 }
 
 /** Default scoring config */
 export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
   entryTimeRatioMin: 0.2,
-  entryPriceRatioMin: 0.05,
-  entryPriceRatioMax: 0.3,
+  entryPriceRatioMin: 0.01,
+  entryPriceRatioMax: 0.40,
   entryEdgeThreshold: 0.05,
   entryProbMin: 0.55,
   exitPriceRatioRange: [0.35, 0.5],
   exitTimeRatio: 0.85,
   earlyTimeRatio: 0.7,
   lateTimeRatio: 0.2,
+  kronosWeight: 0.4,  // 40% Kronos, 60% TA — conservative start
 };
 
 /** Score a direction signal (1-3 per sub-signal) */
@@ -145,19 +148,31 @@ export function applyTimeAwareness(
 /**
  * Main strategy scoring function
  * Returns a StrategySignal with direction, confidence, edge
+ * kronosProb: optional 0-1 probability from Kronos ML model (null = TA-only fallback)
  */
 export function scoreStrategy(
   candles: Candle[],
   upBid: number,
   windowEndTimestamp: number,
   config: ScoringConfig = DEFAULT_SCORING_CONFIG,
-  windowDurSeconds: number = 15 * 60
+  windowDurSeconds: number = 15 * 60,
+  kronosProb: number | null = null,
 ): StrategySignal {
   const { score, maxScore, breakdown } = scoreDirection(candles);
-  const modelProb = score / maxScore;
+  const taProb = score / maxScore;
+
+  // Blend TA + Kronos if available
+  // Dynamic Kronos weight: scale down when Kronos has no view (prob ≈ 0.5)
+  const kronosConfidence = (kronosProb !== null) ? Math.abs(kronosProb - 0.5) / 0.5 : 0;
+  const w = (kronosProb !== null && kronosConfidence > 0.1)
+    ? config.kronosWeight * Math.min(1, kronosConfidence * 2)
+    : 0;
+  const blendedProb = (w > 0)
+    ? (1 - w) * taProb + w * kronosProb!
+    : taProb;
 
   // Time-aware probability
-  const decayProb = applyTimeAwareness(modelProb, windowEndTimestamp, windowDurSeconds);
+  const decayProb = applyTimeAwareness(blendedProb, windowEndTimestamp, windowDurSeconds);
 
   // Market probability
   const marketProb = upBid;
@@ -193,14 +208,15 @@ export function scoreStrategy(
 
   // Exit conditions (check if in a position)
   // For now, mark signal with stage/regime for downstream use
+  const kronosTag = kronosProb !== null ? `|kr=${kronosProb.toFixed(3)}` : "|kr=N/A";
   if (direction !== "none") {
     reasons.push(`regime=${regime}`);
     reasons.push(`stage=${stage}`);
     reasons.push(`upPriceRatio=${upPriceRatio.toFixed(3)}`);
-    reasons.push(`prob=${decayProb.toFixed(3)}`);
+    reasons.push(`prob=${decayProb.toFixed(3)}(ta=${taProb.toFixed(3)}${kronosTag})`);
     reason = reasons.join(" ");
   } else {
-    reason = `no_signal|edge=${edge.toFixed(3)}|upRatio=${upPriceRatio.toFixed(3)}|timeRatio=${timeRatio.toFixed(2)}|stage=${stage}`;
+    reason = `no_signal|edge=${edge.toFixed(3)}|upRatio=${upPriceRatio.toFixed(3)}|timeRatio=${timeRatio.toFixed(2)}|stage=${stage}|ta=${taProb.toFixed(3)}${kronosTag}`;
   }
 
   return {

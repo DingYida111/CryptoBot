@@ -227,10 +227,10 @@ export async function closeAllPositions(instId: string = "BTC-USDT-SWAP"): Promi
     const sz = pos.pos;
     if (parseInt(sz) === 0) continue;
     if (pos.posSide === "long" || pos.posSide === "net") {
-      await placeOrder({ instId, tdMode: "cross", side: "sell", ordType: "market", sz, reduceOnly: true });
+      await placeOrder({ instId, tdMode: "cross", side: "sell", ordType: "market", sz, reduceOnly: true, posSide: "long" });
     }
     if (pos.posSide === "short" || pos.posSide === "net") {
-      await placeOrder({ instId, tdMode: "cross", side: "buy", ordType: "market", sz, reduceOnly: true });
+      await placeOrder({ instId, tdMode: "cross", side: "buy", ordType: "market", sz, reduceOnly: true, posSide: "short" });
     }
   }
 }
@@ -248,11 +248,11 @@ export async function closePositionPartially(instId: string = "BTC-USDT-SWAP", s
   if (parseInt(actualSz) === 0) return null;
 
   if (pos.posSide === "long" || pos.posSide === "net") {
-    const result = await placeOrder({ instId, tdMode: "cross", side: "sell", ordType: "market", sz: actualSz, reduceOnly: true });
+    const result = await placeOrder({ instId, tdMode: "cross", side: "sell", ordType: "market", sz: actualSz, reduceOnly: true, posSide: "long" });
     return result?.sCode === "0" ? actualSz : null;
   }
   if (pos.posSide === "short" || pos.posSide === "net") {
-    const result = await placeOrder({ instId, tdMode: "cross", side: "buy", ordType: "market", sz: actualSz, reduceOnly: true });
+    const result = await placeOrder({ instId, tdMode: "cross", side: "buy", ordType: "market", sz: actualSz, reduceOnly: true, posSide: "short" });
     return result?.sCode === "0" ? actualSz : null;
   }
   return null;
