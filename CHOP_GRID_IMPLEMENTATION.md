@@ -11,6 +11,8 @@ Use `CHOP` / `RANGE` as a dedicated long-inventory grid regime.
 - Keep the grid wide enough to clear round-trip fees
 - Keep re-centering while price stays inside the band
 - Exit fully on breakout, regime flip, window end, or max holding
+- Persist grid snapshot, open lots, and round-trip audit stats in SQLite
+- Deduplicate fills by a stable fill key so restarts do not replay old history
 
 ## Parameters
 
@@ -38,6 +40,7 @@ Use `CHOP` / `RANGE` as a dedicated long-inventory grid regime.
 - Grid is flattened before regime switch or window end
 - Inventory is capped by `CHOP_GRID_MAX_INVENTORY`
 - Grid spacing should satisfy `round_trip_fee <= gross_grid_profit / 4`
+- Round-trip stats are logged with gross, fee, net, and fee/profit ratio
 
 ## Agent Notes
 

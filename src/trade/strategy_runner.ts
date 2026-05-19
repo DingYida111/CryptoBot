@@ -15,7 +15,7 @@ import {
   sellDown,
   getAccountBalance,
 } from "./okx_trade.js";
-import { getChopGridSnapshot, maybeRunChopGrid } from "./chop_grid.js";
+import { getChopGridSnapshot, getChopGridStats, maybeRunChopGrid } from "./chop_grid.js";
 import { scoreStrategy, DEFAULT_SCORING_CONFIG } from "../strategy/scoring.js";
 import { getKronosProb, isKronosReady } from "../strategy/kronos.js";
 import { fetchOkxKlines, okxToBinanceCandle } from "../monitor/okx_klines.js";
@@ -488,11 +488,7 @@ async function tryClosePositionNoSignal(): Promise<boolean> {
     return false;
   }
 
-  if (position.isGrid) {
-    await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", lastBtcPrice, true);
-    resetPosition();
-    return true;
-  }
+  if (position.isGrid) return false;
 
   log(`[TRADE] closeAllPositions — reason=${reason}`);
   await closeAllPositions("BTC-USDT-SWAP");
@@ -500,7 +496,7 @@ async function tryClosePositionNoSignal(): Promise<boolean> {
   return true;
 }
 
-async function tryManageGridPosition(signal: StrategySignal, btcPrice: number): Promise<boolean> {
+async function tryManageGridPosition(signal: StrategySignal, btcPrice: number, endTimestamp: number): Promise<boolean> {
   if (!position.isGrid) return false;
 
   const shouldExitGrid = !isChopLike(signal);
@@ -511,15 +507,17 @@ async function tryManageGridPosition(signal: StrategySignal, btcPrice: number): 
     return true;
   }
 
-  const nowSec = Date.now() / 1000;
-  const remainingSec = (position.windowEndTimestamp ?? 0) - nowSec;
   const elapsedMs = Date.now() - (position.entryTime ?? 0);
-  if (remainingSec <= CLOSE_BEFORE_MINS * 60 || elapsedMs >= MAX_HOLDING_MS) {
-    const reason = remainingSec <= CLOSE_BEFORE_MINS * 60 ? "window_near_end" : "max_holding";
-    log(`[GRID] ${reason} — closing grid inventory`);
+  if (elapsedMs >= MAX_HOLDING_MS) {
+    log(`[GRID] max_holding — closing grid inventory`);
     await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", btcPrice, true);
     resetPosition();
     return true;
+  }
+
+  if (position.windowEndTimestamp !== endTimestamp) {
+    position.windowEndTimestamp = endTimestamp;
+    log(`[GRID] window_rollover — carrying inventory into next window`);
   }
 
   const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false);
@@ -538,6 +536,8 @@ async function main(): Promise<void> {
   log(`Risk contrarian: stop=${CONTRARIAN_STOP_LOSS_PCT}% | break_even=${CONTRARIAN_BREAK_EVEN_PCT}% | PM_H=${PM_CONTRARIAN_HIGH} | PM_L=${PM_CONTRARIAN_LOW} | vol_threshold=${EXTREME_VOL_THRESHOLD}`);
   log(`Risk chop-grid: layers=${CHOP_GRID_CONFIG.layers} | spacing=${(CHOP_GRID_CONFIG.spacingPct * 100).toFixed(2)}% | orderSize=${CHOP_GRID_CONFIG.orderSize} | seedMultiplier=${CHOP_GRID_CONFIG.seedMultiplier} | maxInventory=${CHOP_GRID_CONFIG.maxInventory} | recenter=${(CHOP_GRID_CONFIG.recenterPct * 100).toFixed(2)}% | breakout=${(CHOP_GRID_CONFIG.breakoutPct * 100).toFixed(2)}%`);
   log(`Sizing: MAX_POS_SIZE_PCT=${(MAX_POS_SIZE_PCT * 100).toFixed(0)}% | Kelly formula`);
+  const gridStats = getChopGridStats();
+  log(`Grid stats: roundTrips=${gridStats.roundTripCount} | wins=${gridStats.winCount} | losses=${gridStats.lossCount} | gross=${gridStats.grossPnl.toFixed(4)} | fee=${gridStats.fee.toFixed(4)} | net=${gridStats.netPnl.toFixed(4)} | feeRatio=${gridStats.avgFeeRatio === null ? "n/a" : gridStats.avgFeeRatio.toFixed(3)}`);
 
   await syncPosition();
 
@@ -568,6 +568,9 @@ async function main(): Promise<void> {
       if (position.side === null || position.windowEndTimestamp === null) {
         position.windowEndTimestamp = endTimestamp;
       }
+      if (position.side !== null && position.isGrid) {
+        position.windowEndTimestamp = endTimestamp;
+      }
 
       const dir = signal.direction === "none" ? "—" : signal.direction.toUpperCase();
       const edge = signal.edge >= 0 ? `+${signal.edge.toFixed(3)}` : signal.edge.toFixed(3);
@@ -577,7 +580,7 @@ async function main(): Promise<void> {
       }
 
       if (position.side !== null && position.isGrid) {
-        await tryManageGridPosition(signal, btcPrice);
+        await tryManageGridPosition(signal, btcPrice, endTimestamp);
       } else if (position.side !== null) {
         await tryStepDownPosition(signal);
         await tryClosePosition(signal);

@@ -1,4 +1,5 @@
 import { buyUp, closeAllPositions, getPendingOrders, getPositions, cancelOrder, placeGridBuyLong, placeGridSellLong, getRecentFills } from "./okx_trade.js";
+import { getDb } from "../monitor/storage.js";
 import { fetchBtcSwapMeta, fetchBtcPrice } from "../monitor/okx.js";
 
 export interface ChopGridConfig {
@@ -23,6 +24,17 @@ export interface ChopGridSnapshot {
   reason: string;
 }
 
+export interface ChopGridStats {
+  roundTripCount: number;
+  winCount: number;
+  lossCount: number;
+  grossPnl: number;
+  fee: number;
+  netPnl: number;
+  feeRatioTotal: number;
+  avgFeeRatio: number | null;
+}
+
 const FLAT_SNAPSHOT: ChopGridSnapshot = {
   active: false,
   side: null,
@@ -34,9 +46,67 @@ const FLAT_SNAPSHOT: ChopGridSnapshot = {
   reason: "flat",
 };
 
+interface PersistedOpenLot {
+  px: number;
+  sz: number;
+  fee: number;
+}
+
+interface GridStateRow {
+  inst_id: string;
+  active: number;
+  side: "long" | null;
+  anchor_price: number | null;
+  entry_price: number | null;
+  inventory: number;
+  last_action_at: number;
+  pending_order_count: number;
+  reason: string;
+  open_lots_json: string;
+  round_trip_count: number;
+  win_count: number;
+  loss_count: number;
+  gross_pnl: number;
+  fee_total: number;
+  net_pnl: number;
+  fee_ratio_total: number;
+  updated_at: number;
+}
+
+interface FillCursorRow {
+  inst_id: string;
+  last_fill_time: number;
+  last_fill_key: string | null;
+  created_at: number;
+}
+
+interface RoundTripRow {
+  inst_id: string;
+  fill_time: number;
+  matched_qty: number;
+  buy_vwap: number;
+  sell_px: number;
+  gross_pnl: number;
+  fee: number;
+  net_pnl: number;
+  fee_ratio: number | null;
+  created_at: number;
+}
+
+const INST_ID = "BTC-USDT-SWAP";
 let snapshot: ChopGridSnapshot = { ...FLAT_SNAPSHOT };
-let seenFillIds = new Set<string>();
-let openLots: Array<{ px: number; sz: number; fee: number }> = [];
+let openLots: PersistedOpenLot[] = [];
+let stats: ChopGridStats = {
+  roundTripCount: 0,
+  winCount: 0,
+  lossCount: 0,
+  grossPnl: 0,
+  fee: 0,
+  netPnl: 0,
+  feeRatioTotal: 0,
+  avgFeeRatio: null,
+};
+let schemaReady = false;
 
 function logGrid(msg: string): void {
   console.error(`[${new Date().toISOString()}] [GRID] ${msg}`);
@@ -54,21 +124,255 @@ function formatPrice(price: number, tickSz: number): string {
 }
 
 function calcMinSpacingPct(): number {
-  const takerFee = 0.0005;
   const makerFee = 0.0002;
   const roundTrip = makerFee * 2;
-  const feeFloor = roundTrip * 4; // fee <= profit / 4
+  const feeFloor = roundTrip * 4;
   return Math.max(0.007, feeFloor);
+}
+
+function getDbReady() {
+  const db = getDb();
+  if (!schemaReady) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS chop_grid_state (
+        inst_id TEXT PRIMARY KEY,
+        active INTEGER NOT NULL,
+        side TEXT,
+        anchor_price REAL,
+        entry_price REAL,
+        inventory REAL NOT NULL,
+        last_action_at INTEGER NOT NULL,
+        pending_order_count INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        open_lots_json TEXT NOT NULL,
+        round_trip_count INTEGER NOT NULL DEFAULT 0,
+        win_count INTEGER NOT NULL DEFAULT 0,
+        loss_count INTEGER NOT NULL DEFAULT 0,
+        gross_pnl REAL NOT NULL DEFAULT 0,
+        fee_total REAL NOT NULL DEFAULT 0,
+        net_pnl REAL NOT NULL DEFAULT 0,
+        fee_ratio_total REAL NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS chop_grid_seen_fills (
+        inst_id TEXT NOT NULL,
+        fill_key TEXT NOT NULL,
+        fill_time INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (inst_id, fill_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS chop_grid_fill_cursor (
+        inst_id TEXT PRIMARY KEY,
+        last_fill_time INTEGER NOT NULL,
+        last_fill_key TEXT,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS chop_grid_roundtrips (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        inst_id TEXT NOT NULL,
+        fill_time INTEGER NOT NULL,
+        matched_qty REAL NOT NULL,
+        buy_vwap REAL NOT NULL,
+        sell_px REAL NOT NULL,
+        gross_pnl REAL NOT NULL,
+        fee REAL NOT NULL,
+        net_pnl REAL NOT NULL,
+        fee_ratio REAL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_chop_grid_roundtrips_inst_time
+        ON chop_grid_roundtrips(inst_id, fill_time DESC);
+    `);
+    schemaReady = true;
+    loadState(db);
+  }
+  return db;
+}
+
+function loadState(db = getDb()): void {
+  const row = db.prepare("SELECT * FROM chop_grid_state WHERE inst_id = ?").get(INST_ID) as GridStateRow | undefined;
+  if (!row) {
+    snapshot = { ...FLAT_SNAPSHOT };
+    openLots = [];
+    stats = {
+      roundTripCount: 0,
+      winCount: 0,
+      lossCount: 0,
+      grossPnl: 0,
+      fee: 0,
+      netPnl: 0,
+      feeRatioTotal: 0,
+      avgFeeRatio: null,
+    };
+    return;
+  }
+
+  snapshot = {
+    active: row.active === 1,
+    side: row.side,
+    anchorPrice: row.anchor_price,
+    entryPrice: row.entry_price,
+    inventory: row.inventory,
+    lastActionAt: row.last_action_at,
+    pendingOrderCount: row.pending_order_count,
+    reason: row.reason,
+  };
+  try {
+    openLots = JSON.parse(row.open_lots_json) as PersistedOpenLot[];
+  } catch {
+    openLots = [];
+  }
+  stats = {
+    roundTripCount: row.round_trip_count,
+    winCount: row.win_count,
+    lossCount: row.loss_count,
+    grossPnl: row.gross_pnl,
+    fee: row.fee_total,
+    netPnl: row.net_pnl,
+    feeRatioTotal: row.fee_ratio_total,
+    avgFeeRatio: row.round_trip_count > 0 ? row.fee_ratio_total / row.round_trip_count : null,
+  };
+}
+
+function persistState(): void {
+  const db = getDbReady();
+  const now = Date.now();
+  const stmt = db.prepare(`
+    INSERT INTO chop_grid_state (
+      inst_id, active, side, anchor_price, entry_price, inventory,
+      last_action_at, pending_order_count, reason, open_lots_json,
+      round_trip_count, win_count, loss_count, gross_pnl, fee_total, net_pnl, fee_ratio_total,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(inst_id) DO UPDATE SET
+      active = excluded.active,
+      side = excluded.side,
+      anchor_price = excluded.anchor_price,
+      entry_price = excluded.entry_price,
+      inventory = excluded.inventory,
+      last_action_at = excluded.last_action_at,
+      pending_order_count = excluded.pending_order_count,
+      reason = excluded.reason,
+      open_lots_json = excluded.open_lots_json,
+      round_trip_count = excluded.round_trip_count,
+      win_count = excluded.win_count,
+      loss_count = excluded.loss_count,
+      gross_pnl = excluded.gross_pnl,
+      fee_total = excluded.fee_total,
+      net_pnl = excluded.net_pnl,
+      fee_ratio_total = excluded.fee_ratio_total,
+      updated_at = excluded.updated_at
+  `);
+  stmt.run(
+    INST_ID,
+    snapshot.active ? 1 : 0,
+    snapshot.side,
+    snapshot.anchorPrice,
+    snapshot.entryPrice,
+    snapshot.inventory,
+    snapshot.lastActionAt,
+    snapshot.pendingOrderCount,
+    snapshot.reason,
+    JSON.stringify(openLots),
+    stats.roundTripCount,
+    stats.winCount,
+    stats.lossCount,
+    stats.grossPnl,
+    stats.fee,
+    stats.netPnl,
+    stats.feeRatioTotal,
+    now
+  );
 }
 
 function reset(): void {
   snapshot = { ...FLAT_SNAPSHOT };
-  seenFillIds = new Set<string>();
   openLots = [];
+  persistState();
 }
 
 export function getChopGridSnapshot(): ChopGridSnapshot {
   return { ...snapshot };
+}
+
+export function getChopGridStats(): ChopGridStats {
+  return { ...stats };
+}
+
+function fillKey(fill: { ordId?: string; tradeId?: string; fillTime?: string; fillPx?: string; fillSz?: string; side?: string; posSide?: string }): string {
+  return [
+    fill.tradeId ?? "",
+    fill.ordId ?? "",
+    fill.fillTime ?? "",
+    fill.fillPx ?? "",
+    fill.fillSz ?? "",
+    fill.side ?? "",
+    fill.posSide ?? "",
+  ].join("|");
+}
+
+function recordSeenFill(fill: { ordId?: string; tradeId?: string; fillTime?: string }, key: string): boolean {
+  const db = getDbReady();
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO chop_grid_seen_fills (inst_id, fill_key, fill_time, created_at)
+    VALUES (?, ?, ?, ?)
+  `);
+  const result = stmt.run(INST_ID, key, Number(fill.fillTime ?? 0), Date.now());
+  return result.changes > 0;
+}
+
+function getFillCursor(): FillCursorRow | undefined {
+  const db = getDbReady();
+  return db.prepare("SELECT * FROM chop_grid_fill_cursor WHERE inst_id = ?").get(INST_ID) as FillCursorRow | undefined;
+}
+
+function setFillCursor(fillTime: number, key: string | null): void {
+  const db = getDbReady();
+  db.prepare(`
+    INSERT INTO chop_grid_fill_cursor (inst_id, last_fill_time, last_fill_key, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(inst_id) DO UPDATE SET
+      last_fill_time = excluded.last_fill_time,
+      last_fill_key = excluded.last_fill_key,
+      created_at = excluded.created_at
+  `).run(INST_ID, fillTime, key, Date.now());
+}
+
+function persistRoundTrip(roundTrip: {
+  fillTime: number;
+  matchedQty: number;
+  buyVwap: number;
+  sellPx: number;
+  grossPnl: number;
+  fee: number;
+  netPnl: number;
+  feeRatio: number | null;
+}): void {
+  const db = getDbReady();
+  db.prepare(`
+    INSERT INTO chop_grid_roundtrips (
+      inst_id, fill_time, matched_qty, buy_vwap, sell_px, gross_pnl, fee, net_pnl, fee_ratio, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    INST_ID,
+    roundTrip.fillTime,
+    roundTrip.matchedQty,
+    roundTrip.buyVwap,
+    roundTrip.sellPx,
+    roundTrip.grossPnl,
+    roundTrip.fee,
+    roundTrip.netPnl,
+    roundTrip.feeRatio,
+    Date.now()
+  );
+}
+
+function recomputeStatsFromState(): void {
+  stats.avgFeeRatio = stats.roundTripCount > 0 ? stats.fee / Math.max(stats.grossPnl, 1e-9) : null;
 }
 
 async function cancelAllGridOrders(instId: string): Promise<void> {
@@ -99,6 +403,7 @@ async function syncGridPosition(instId: string): Promise<void> {
     inventory,
     reason: "synced",
   };
+  persistState();
 }
 
 async function ensureGridOrders(instId: string, config: ChopGridConfig, price: number, metaTickSz: number): Promise<void> {
@@ -121,14 +426,27 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
   await Promise.allSettled(orders);
   snapshot.lastActionAt = Date.now();
   snapshot.pendingOrderCount = (await getPendingOrders(instId)).length;
+  persistState();
 }
 
 async function auditRecentGridFills(instId: string): Promise<void> {
   const fills = await getRecentFills(instId, 50);
   const ordered = [...fills].reverse();
+  const cursor = getFillCursor();
+  let maxFillTime = cursor?.last_fill_time ?? 0;
+  let maxFillKey = cursor?.last_fill_key ?? null;
+
+  if (!cursor && ordered.length > 0) {
+    const newest = ordered[ordered.length - 1];
+    setFillCursor(Number(newest.fillTime ?? 0), fillKey(newest));
+    return;
+  }
+
   for (const fill of ordered) {
-    if (!fill.ordId || seenFillIds.has(fill.ordId)) continue;
-    seenFillIds.add(fill.ordId);
+    const key = fillKey(fill);
+    const fillTime = Number(fill.fillTime ?? 0);
+    if (cursor && fillTime <= cursor.last_fill_time) continue;
+    if (!recordSeenFill(fill, key)) continue;
 
     const px = parseFloat(fill.fillPx);
     const sz = parseFloat(fill.fillSz);
@@ -137,6 +455,11 @@ async function auditRecentGridFills(instId: string): Promise<void> {
 
     if (fill.side === "buy" && fill.posSide === "long") {
       openLots.push({ px, sz, fee });
+      if (fillTime > maxFillTime || (fillTime === maxFillTime && key > (maxFillKey ?? ""))) {
+        maxFillTime = fillTime;
+        maxFillKey = key;
+      }
+      persistState();
       continue;
     }
 
@@ -146,12 +469,14 @@ async function auditRecentGridFills(instId: string): Promise<void> {
     let grossPnl = 0;
     let matchedQty = 0;
     let accumulatedBuyFee = 0;
+    let weightedBuyPx = 0;
 
     while (remaining > 0 && openLots.length > 0) {
       const lot = openLots[0];
       const matched = Math.min(remaining, lot.sz);
       grossPnl += (px - lot.px) * matched;
       accumulatedBuyFee += lot.fee * (matched / lot.sz);
+      weightedBuyPx += lot.px * matched;
       matchedQty += matched;
       remaining -= matched;
       lot.sz -= matched;
@@ -166,9 +491,39 @@ async function auditRecentGridFills(instId: string): Promise<void> {
     const totalFee = accumulatedBuyFee + sellFee;
     const netPnl = grossPnl - totalFee;
     const feeToProfit = grossPnl > 0 ? totalFee / grossPnl : Infinity;
+    const buyVwap = matchedQty > 0 ? weightedBuyPx / matchedQty : px;
+    stats.roundTripCount += 1;
+    stats.grossPnl += grossPnl;
+    stats.fee += totalFee;
+    stats.netPnl += netPnl;
+    stats.feeRatioTotal += Number.isFinite(feeToProfit) ? feeToProfit : 0;
+    if (netPnl >= 0) {
+      stats.winCount += 1;
+    } else {
+      stats.lossCount += 1;
+    }
+    stats.avgFeeRatio = stats.roundTripCount > 0 ? stats.feeRatioTotal / stats.roundTripCount : null;
+    persistRoundTrip({
+      fillTime: Number(fill.fillTime ?? 0),
+      matchedQty,
+      buyVwap,
+      sellPx: px,
+      grossPnl,
+      fee: totalFee,
+      netPnl,
+      feeRatio: Number.isFinite(feeToProfit) ? feeToProfit : null,
+    });
+    persistState();
+    if (fillTime > maxFillTime || (fillTime === maxFillTime && key > (maxFillKey ?? ""))) {
+      maxFillTime = fillTime;
+      maxFillKey = key;
+    }
     logGrid(
-      `roundtrip qty=${matchedQty.toFixed(4)} gross=${grossPnl.toFixed(4)} fee=${totalFee.toFixed(4)} net=${netPnl.toFixed(4)} fee_ratio=${Number.isFinite(feeToProfit) ? feeToProfit.toFixed(3) : "inf"} sell_px=${px.toFixed(1)}`
+      `roundtrip qty=${matchedQty.toFixed(4)} gross=${grossPnl.toFixed(4)} fee=${totalFee.toFixed(4)} net=${netPnl.toFixed(4)} fee_ratio=${Number.isFinite(feeToProfit) ? feeToProfit.toFixed(3) : "inf"} sell_px=${px.toFixed(1)} avg_fee_ratio=${stats.avgFeeRatio === null ? "n/a" : stats.avgFeeRatio.toFixed(3)} wins=${stats.winCount} losses=${stats.lossCount}`
     );
+  }
+  if (maxFillTime > 0) {
+    setFillCursor(maxFillTime, maxFillKey);
   }
 }
 
@@ -216,6 +571,7 @@ export async function maybeRunChopGrid(
       pendingOrderCount: 0,
       reason: `init_${regime}`,
     };
+    persistState();
     await ensureGridOrders(instId, config, price, meta.tickSz);
     return { active: true, reason: snapshot.reason, openedSeed: true };
   }
@@ -233,6 +589,7 @@ export async function maybeRunChopGrid(
     snapshot.anchorPrice = price;
     snapshot.entryPrice = price;
     snapshot.reason = "recentering";
+    persistState();
   }
 
   if (snapshot.pendingOrderCount === 0 || snapshot.reason === "recentering") {
