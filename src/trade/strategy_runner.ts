@@ -217,7 +217,6 @@ async function syncPosition(): Promise<void> {
     position.entryPrice = avgPx;
     position.entryTime = Date.now();
     position.orderId = null;
-    position.windowEndTimestamp = null;
     position.originalSize = sz;
     position.lastStepIndex = -1;
     position.breakEvenActivated = false;
@@ -390,9 +389,11 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
     ? (btcRef - position.entryPrice) / position.entryPrice * 100
     : (position.entryPrice - btcRef) / position.entryPrice * 100;
 
-  const windowEndTs = position.windowEndTimestamp ?? 0;
-  const remainingMins = (windowEndTs - Date.now()) / 60000;
-  if (remainingMins <= CLOSE_BEFORE_MINS && position.side !== null) {
+  const nowSec = Date.now() / 1000;
+  const windowEndTsSec = position.windowEndTimestamp ?? 0;
+  const remainingSec = windowEndTsSec - nowSec;
+  const remainingMins = remainingSec / 60;
+  if (remainingSec > 0 && remainingMins <= CLOSE_BEFORE_MINS && position.side !== null) {
     log(`[EXIT] window_near_end (${remainingMins.toFixed(1)}m left) | pnl=${pnlPct.toFixed(2)}% | closing`);
     await closeAllPositions("BTC-USDT-SWAP");
     resetPosition();

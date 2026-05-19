@@ -34,7 +34,7 @@ const SIGNAL_INTERVAL_MS = parseInt(process.env.SIGNAL_INTERVAL_MS ?? "10000");
 // Contrarian parameters
 const PM_THRESHOLD = parseFloat(process.env.CONTRARIAN_THRESHOLD ?? "0.75");
 const BASE_POSITION_SIZE = parseInt(process.env.CONTRARIAN_SIZE ?? "2");
-const ENABLE_TRADING = process.env.ENABLE_TRADING !== "false";
+const ENABLE_TRADING = process.env.ENABLE_TRADING === "true";
 
 // Exit / risk management (shared with main runner)
 const STOP_LOSS_PCT = parseFloat(process.env.CONTRARIAN_STOP_LOSS_PCT ?? "0.4");
