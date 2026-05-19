@@ -641,20 +641,6 @@ async function tryManageGridPosition(signal: StrategySignal, btcPrice: number, e
     return true;
   }
 
-  const elapsedMs = Date.now() - (position.entryTime ?? 0);
-  if (elapsedMs >= MAX_HOLDING_MS) {
-    log(`[GRID] max_holding — closing grid inventory`);
-    logTradeEvent("GRID", "grid_exit", {
-      reason: "max_holding",
-      regime: signal.regime,
-      btcPrice,
-      elapsedMs,
-    });
-    await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", btcPrice, true);
-    resetPosition();
-    return true;
-  }
-
   if (position.windowEndTimestamp !== endTimestamp) {
     position.windowEndTimestamp = endTimestamp;
     log(`[GRID] window_rollover — carrying inventory into next window`);

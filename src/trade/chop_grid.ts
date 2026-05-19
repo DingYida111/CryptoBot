@@ -1,4 +1,4 @@
-import { buyUp, closeAllPositions, getPendingOrders, getPositions, cancelOrder, placeGridBuyLong, placeGridSellLong, getRecentFills } from "./okx_trade.js";
+import { buyUp, closeAllPositions, getPendingOrders, getPositions, cancelPendingOrders, placeGridBuyLong, placeGridSellLong, getRecentFills } from "./okx_trade.js";
 import { logTradeEvent } from "./trade_logger.js";
 import { getDb } from "../monitor/storage.js";
 import { fetchBtcSwapMeta, fetchBtcPrice } from "../monitor/okx.js";
@@ -92,6 +92,15 @@ interface RoundTripRow {
   net_pnl: number;
   fee_ratio: number | null;
   created_at: number;
+}
+
+interface PendingGridOrder {
+  ordId?: string;
+  side?: "buy" | "sell";
+  posSide?: "long" | "short";
+  px?: string;
+  sz?: string;
+  state?: string;
 }
 
 const INST_ID = "BTC-USDT-SWAP";
@@ -385,13 +394,64 @@ function recomputeStatsFromState(): void {
 }
 
 async function cancelAllGridOrders(instId: string): Promise<void> {
-  const pending = await getPendingOrders(instId);
-  for (const order of pending) {
-    const ordId = order?.ordId ?? order?.ordID ?? order?.orderId;
-    if (typeof ordId === "string" && ordId.length > 0) {
-      await cancelOrder(instId, ordId);
+  let remaining = await getPendingOrders(instId);
+  for (let pass = 1; pass <= 3 && remaining.length > 0; pass += 1) {
+    const ordIds = remaining
+      .map((order) => order?.ordId ?? order?.ordID ?? order?.orderId)
+      .filter((ordId): ordId is string => typeof ordId === "string" && ordId.length > 0);
+    const acknowledged = await cancelPendingOrders(instId, ordIds);
+    logTradeEvent("GRID", "cancel_pending_pass", {
+      instId,
+      pass,
+      before: remaining.length,
+      ordIds: ordIds.length,
+      acknowledged,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    remaining = await getPendingOrders(instId);
+  }
+  snapshot.pendingOrderCount = remaining.length;
+  persistState();
+}
+
+function desiredGridOrders(config: ChopGridConfig, price: number, metaTickSz: number): string[] {
+  const spacing = Math.max(config.spacingPct, calcMinSpacingPct());
+  const base = snapshot.anchorPrice ?? price;
+  const desired: string[] = [];
+  for (let i = 1; i <= config.layers; i += 1) {
+    const offset = base * spacing * i;
+    desired.push(`sell:${formatPrice(base + offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
+    if (snapshot.inventory < config.maxInventory) {
+      desired.push(`buy:${formatPrice(base - offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
     }
   }
+  return desired.sort();
+}
+
+function pendingGridOrderKeys(pending: PendingGridOrder[]): string[] {
+  return pending
+    .filter((order) => order.posSide === "long" && (order.side === "buy" || order.side === "sell"))
+    .map((order) => `${order.side}:${order.px ?? ""}:${order.sz ?? ""}`)
+    .sort();
+}
+
+function shouldRefreshGridOrders(
+  pending: PendingGridOrder[],
+  config: ChopGridConfig,
+  price: number,
+  metaTickSz: number
+): { refresh: boolean; reason: string } {
+  const desired = desiredGridOrders(config, price, metaTickSz);
+  const current = pendingGridOrderKeys(pending);
+  if (current.length !== desired.length) {
+    return { refresh: true, reason: `count_mismatch current=${current.length} desired=${desired.length}` };
+  }
+  for (let i = 0; i < desired.length; i += 1) {
+    if (desired[i] !== current[i]) {
+      return { refresh: true, reason: `shape_mismatch idx=${i} current=${current[i] ?? "n/a"} desired=${desired[i]}` };
+    }
+  }
+  return { refresh: false, reason: "aligned" };
 }
 
 async function syncGridPosition(instId: string): Promise<void> {
@@ -608,12 +668,9 @@ export async function maybeRunChopGrid(
     return { active: false, reason: "force_exit", openedSeed: false };
   }
 
-  const now = Date.now();
-  if (snapshot.active && now - snapshot.lastActionAt < config.cooldownMs) {
-    return { active: true, reason: "cooldown", openedSeed: false };
-  }
-
   if (!snapshot.active) {
+    await cancelAllGridOrders(instId);
+    const now = Date.now();
     const seedSize = Math.max(1, config.orderSize * Math.max(1, config.seedMultiplier));
     const seed = await buyUp(instId, String(seedSize));
     if (!seed || seed.sCode !== "0") {
@@ -666,9 +723,34 @@ export async function maybeRunChopGrid(
     persistState();
   }
 
-  if (snapshot.pendingOrderCount === 0 || snapshot.reason === "recentering") {
+  const now = Date.now();
+  const pending = await getPendingOrders(instId) as PendingGridOrder[];
+  snapshot.pendingOrderCount = pending.length;
+  const refreshCheck = shouldRefreshGridOrders(pending, config, price, meta.tickSz);
+  const cooldownActive = now - snapshot.lastActionAt < config.cooldownMs;
+  const mustRefresh = snapshot.reason === "recentering" || snapshot.pendingOrderCount === 0 || refreshCheck.refresh;
+
+  if (mustRefresh) {
+    logTradeEvent("GRID", "refresh_required", {
+      instId,
+      reason: snapshot.reason === "recentering"
+        ? "recentering"
+        : snapshot.pendingOrderCount === 0
+          ? "pending_empty"
+          : refreshCheck.reason,
+      pendingOrderCount: snapshot.pendingOrderCount,
+      cooldownActive,
+      inventory: snapshot.inventory,
+      anchorPrice: snapshot.anchorPrice,
+    });
     await cancelAllGridOrders(instId);
     await ensureGridOrders(instId, config, price, meta.tickSz);
+    return { active: true, reason: snapshot.reason, openedSeed: false };
+  }
+
+  persistState();
+  if (cooldownActive) {
+    return { active: true, reason: "cooldown", openedSeed: false };
   }
   return { active: true, reason: snapshot.reason, openedSeed: false };
 }

@@ -122,6 +122,7 @@ export async function getPositions(instId: string = "BTC-USDT-SWAP"): Promise<Po
 export type OrderSide = "buy" | "sell";
 export type OrderType = "market" | "limit" | "post_only";
 export type PosSide = "long" | "short";
+const CANCEL_BATCH_SIZE = 20;
 
 export interface OrderRequest {
   instId: string; tdMode: "cross" | "isolated" | "cash";
@@ -250,11 +251,55 @@ export async function getPendingOrders(instId = "BTC-USDT-SWAP") {
 
 export async function cancelOrder(instId: string, ordId: string) {
   try {
-    const body = JSON.stringify([{ instId, ordId }]);
-    const data = await okxRequest<{ code: string }>(
-      "POST", "/api/v5/trade/cancel-orders", body, true);
+    const body = JSON.stringify({ instId, ordId });
+    const data = await okxRequest<{ code: string; data?: Array<{ ordId?: string; sCode?: string; sMsg?: string }> }>(
+      "POST", "/api/v5/trade/cancel-order", body, true);
+    logTradeEvent("OKX", "cancel_order_ack", {
+      instId,
+      ordId,
+      response: data,
+    });
     return data.code === "0";
-  } catch { return false; }
+  } catch (e) {
+    logTradeEvent("OKX", "cancel_order_exception", {
+      instId,
+      ordId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return false;
+  }
+}
+
+export async function cancelPendingOrders(instId: string, ordIds: string[]): Promise<number> {
+  if (!ordIds.length) return 0;
+
+  let acknowledged = 0;
+  for (let i = 0; i < ordIds.length; i += CANCEL_BATCH_SIZE) {
+    const batch = ordIds.slice(i, i + CANCEL_BATCH_SIZE).map((ordId) => ({ instId, ordId }));
+    try {
+      const body = JSON.stringify(batch);
+      const data = await okxRequest<{
+        code: string;
+        data?: Array<{ ordId?: string; sCode?: string; sMsg?: string }>;
+      }>("POST", "/api/v5/trade/cancel-batch-orders", body, true);
+      const successCount = (data.data ?? []).filter((row) => row.sCode === "0").length;
+      acknowledged += successCount;
+      logTradeEvent("OKX", "cancel_batch_ack", {
+        instId,
+        batchSize: batch.length,
+        successCount,
+        response: data,
+      });
+    } catch (e) {
+      logTradeEvent("OKX", "cancel_batch_exception", {
+        instId,
+        batchSize: batch.length,
+        ordIds: batch.map((row) => row.ordId).join(","),
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return acknowledged;
 }
 
 export interface FilledOrder {
