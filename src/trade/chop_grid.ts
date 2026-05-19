@@ -140,6 +140,12 @@ function calcMinSpacingPct(): number {
   return Math.max(0.007, feeFloor);
 }
 
+function maxBuyLayersAllowed(config: ChopGridConfig): number {
+  const remainingCapacity = Math.max(0, config.maxInventory - snapshot.inventory);
+  if (remainingCapacity <= 0) return 0;
+  return Math.floor(remainingCapacity / Math.max(1, config.orderSize));
+}
+
 function getDbReady() {
   const db = getDb();
   if (!schemaReady) {
@@ -418,10 +424,11 @@ function desiredGridOrders(config: ChopGridConfig, price: number, metaTickSz: nu
   const spacing = Math.max(config.spacingPct, calcMinSpacingPct());
   const base = snapshot.anchorPrice ?? price;
   const desired: string[] = [];
+  const maxBuyLayers = maxBuyLayersAllowed(config);
   for (let i = 1; i <= config.layers; i += 1) {
     const offset = base * spacing * i;
     desired.push(`sell:${formatPrice(base + offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
-    if (snapshot.inventory < config.maxInventory) {
+    if (i <= maxBuyLayers) {
       desired.push(`buy:${formatPrice(base - offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
     }
   }
@@ -498,6 +505,7 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
   const size = String(Math.max(1, config.orderSize));
   const base = snapshot.anchorPrice ?? price;
   const orders: Promise<any>[] = [];
+  const maxBuyLayers = maxBuyLayersAllowed(config);
 
   for (let i = 1; i <= config.layers; i++) {
     const offset = base * spacing * i;
@@ -505,7 +513,7 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
     const sellPx = formatPrice(base + offset, metaTickSz);
 
     orders.push(placeGridSellLong(instId, size, sellPx));
-    if (snapshot.inventory < config.maxInventory) {
+    if (i <= maxBuyLayers) {
       orders.push(placeGridBuyLong(instId, size, buyPx));
     }
   }
@@ -520,6 +528,7 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
     inventory: snapshot.inventory,
     pendingOrderCount: snapshot.pendingOrderCount,
     layers: config.layers,
+    buyLayersPlaced: maxBuyLayers,
     spacingPct: spacing,
   });
   persistState();
