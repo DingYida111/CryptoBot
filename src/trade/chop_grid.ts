@@ -5,6 +5,7 @@ export interface ChopGridConfig {
   layers: number;
   spacingPct: number;
   orderSize: number;
+  seedMultiplier: number;
   maxInventory: number;
   recenterPct: number;
   breakoutPct: number;
@@ -46,6 +47,13 @@ function formatPrice(price: number, tickSz: number): string {
   return rounded.toFixed(decimals);
 }
 
+function calcMinSpacingPct(): number {
+  const takerFee = 0.0005;
+  const makerFee = 0.0002;
+  const roundTrip = makerFee * 2;
+  return Math.max(0.006, roundTrip * 2.5 + takerFee * 2);
+}
+
 function reset(): void {
   snapshot = { ...FLAT_SNAPSHOT };
 }
@@ -85,7 +93,7 @@ async function syncGridPosition(instId: string): Promise<void> {
 }
 
 async function ensureGridOrders(instId: string, config: ChopGridConfig, price: number, metaTickSz: number): Promise<void> {
-  const spacing = Math.max(config.spacingPct, 0.0001);
+  const spacing = Math.max(config.spacingPct, calcMinSpacingPct());
   const size = String(Math.max(1, config.orderSize));
   const base = snapshot.anchorPrice ?? price;
   const orders: Promise<any>[] = [];
@@ -134,7 +142,8 @@ export async function maybeRunChopGrid(
   }
 
   if (!snapshot.active) {
-    const seed = await buyUp(instId, String(Math.max(1, config.orderSize)));
+    const seedSize = Math.max(1, config.orderSize * Math.max(1, config.seedMultiplier));
+    const seed = await buyUp(instId, String(seedSize));
     if (!seed || seed.sCode !== "0") {
       return { active: false, reason: "seed_order_failed", openedSeed: false };
     }
@@ -143,7 +152,7 @@ export async function maybeRunChopGrid(
       side: "long",
       anchorPrice: price,
       entryPrice: price,
-      inventory: Math.max(1, config.orderSize),
+      inventory: seedSize,
       lastActionAt: now,
       pendingOrderCount: 0,
       reason: `init_${regime}`,

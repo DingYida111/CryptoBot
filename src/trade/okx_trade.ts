@@ -123,7 +123,7 @@ export async function getPositions(instId: string = "BTC-USDT-SWAP"): Promise<Po
 }
 
 export type OrderSide = "buy" | "sell";
-export type OrderType = "market" | "limit";
+export type OrderType = "market" | "limit" | "post_only";
 export type PosSide = "long" | "short";
 
 export interface OrderRequest {
@@ -151,7 +151,7 @@ export async function placeOrder(req: OrderRequest): Promise<OrderResult | null>
 export async function placeLimitOrder(
   req: Omit<OrderRequest, "ordType"> & { px: string }
 ): Promise<OrderResult | null> {
-  return placeOrder({ ...req, ordType: "limit" });
+  return placeOrder({ ...req, ordType: "post_only" });
 }
 
 export async function buyUp(instId = "BTC-USDT-SWAP", sz = "1") {

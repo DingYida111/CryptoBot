@@ -38,6 +38,7 @@ const CHOP_GRID_CONFIG = {
   layers: APP_CONFIG.chopGridLayers,
   spacingPct: APP_CONFIG.chopGridSpacingPct,
   orderSize: APP_CONFIG.chopGridOrderSize,
+  seedMultiplier: APP_CONFIG.chopGridSeedMultiplier,
   maxInventory: APP_CONFIG.chopGridMaxInventory,
   recenterPct: APP_CONFIG.chopGridRecenterPct,
   breakoutPct: APP_CONFIG.chopGridBreakoutPct,
@@ -535,7 +536,7 @@ async function main(): Promise<void> {
   log(`Config: ${getStartupRiskSummary().join(" | ")}`);
   log(`Risk main: stop=${STOP_LOSS_PCT}% | break_even=${BREAK_EVEN_PCT}%`);
   log(`Risk contrarian: stop=${CONTRARIAN_STOP_LOSS_PCT}% | break_even=${CONTRARIAN_BREAK_EVEN_PCT}% | PM_H=${PM_CONTRARIAN_HIGH} | PM_L=${PM_CONTRARIAN_LOW} | vol_threshold=${EXTREME_VOL_THRESHOLD}`);
-  log(`Risk chop-grid: layers=${CHOP_GRID_CONFIG.layers} | spacing=${(CHOP_GRID_CONFIG.spacingPct * 100).toFixed(2)}% | orderSize=${CHOP_GRID_CONFIG.orderSize} | maxInventory=${CHOP_GRID_CONFIG.maxInventory} | recenter=${(CHOP_GRID_CONFIG.recenterPct * 100).toFixed(2)}% | breakout=${(CHOP_GRID_CONFIG.breakoutPct * 100).toFixed(2)}%`);
+  log(`Risk chop-grid: layers=${CHOP_GRID_CONFIG.layers} | spacing=${(CHOP_GRID_CONFIG.spacingPct * 100).toFixed(2)}% | orderSize=${CHOP_GRID_CONFIG.orderSize} | seedMultiplier=${CHOP_GRID_CONFIG.seedMultiplier} | maxInventory=${CHOP_GRID_CONFIG.maxInventory} | recenter=${(CHOP_GRID_CONFIG.recenterPct * 100).toFixed(2)}% | breakout=${(CHOP_GRID_CONFIG.breakoutPct * 100).toFixed(2)}%`);
   log(`Sizing: MAX_POS_SIZE_PCT=${(MAX_POS_SIZE_PCT * 100).toFixed(0)}% | Kelly formula`);
 
   await syncPosition();

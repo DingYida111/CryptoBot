@@ -6,9 +6,9 @@ Use `CHOP` / `RANGE` as a dedicated long-inventory grid regime.
 
 ## Behavior
 
-- Seed one long position when the regime enters `CHOP` / `RANGE`
-- Place staggered sell orders above the anchor price
-- Place staggered buy orders below the anchor price
+- Seed a larger long position when the regime enters `CHOP` / `RANGE`
+- Use maker-only ladder orders above and below the anchor price
+- Keep the grid wide enough to clear round-trip fees
 - Keep re-centering while price stays inside the band
 - Exit fully on breakout, regime flip, window end, or max holding
 
@@ -17,6 +17,7 @@ Use `CHOP` / `RANGE` as a dedicated long-inventory grid regime.
 - `CHOP_GRID_LAYERS`
 - `CHOP_GRID_SPACING_PCT`
 - `CHOP_GRID_ORDER_SIZE`
+- `CHOP_GRID_SEED_MULTIPLIER`
 - `CHOP_GRID_MAX_INVENTORY`
 - `CHOP_GRID_RECENTER_PCT`
 - `CHOP_GRID_BREAKOUT_PCT`
@@ -36,6 +37,7 @@ Use `CHOP` / `RANGE` as a dedicated long-inventory grid regime.
 - Breakout is a hard exit, not a re-center
 - Grid is flattened before regime switch or window end
 - Inventory is capped by `CHOP_GRID_MAX_INVENTORY`
+- Grid spacing should exceed the fee floor by a wide margin
 
 ## Agent Notes
 
