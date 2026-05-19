@@ -228,6 +228,9 @@ export async function cancelOrder(instId: string, ordId: string) {
 export interface FilledOrder {
   instId: string; ordId: string; fillPx: string; fillSz: string;
   side: OrderSide; posSide: PosSide; fillTime: string;
+  execType?: string;
+  fee?: string;
+  feeCcy?: string;
 }
 
 export async function getRecentFills(instId = "BTC-USDT-SWAP", limit = 10) {

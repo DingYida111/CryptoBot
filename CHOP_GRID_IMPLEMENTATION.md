@@ -44,3 +44,4 @@ Use `CHOP` / `RANGE` as a dedicated long-inventory grid regime.
 - Keep the grid module separate from trend logic
 - Do not reuse the directional stop-loss logic on grid inventory
 - Prefer config-driven changes over code changes for tuning
+- Audit each completed buy/sell round-trip with gross PnL, fee, net PnL, and fee/profit ratio

@@ -1,4 +1,4 @@
-import { buyUp, closeAllPositions, getPendingOrders, getPositions, cancelOrder, placeGridBuyLong, placeGridSellLong } from "./okx_trade.js";
+import { buyUp, closeAllPositions, getPendingOrders, getPositions, cancelOrder, placeGridBuyLong, placeGridSellLong, getRecentFills } from "./okx_trade.js";
 import { fetchBtcSwapMeta, fetchBtcPrice } from "../monitor/okx.js";
 
 export interface ChopGridConfig {
@@ -35,6 +35,12 @@ const FLAT_SNAPSHOT: ChopGridSnapshot = {
 };
 
 let snapshot: ChopGridSnapshot = { ...FLAT_SNAPSHOT };
+let seenFillIds = new Set<string>();
+let openLots: Array<{ px: number; sz: number; fee: number }> = [];
+
+function logGrid(msg: string): void {
+  console.error(`[${new Date().toISOString()}] [GRID] ${msg}`);
+}
 
 function roundToTick(price: number, tickSz: number): number {
   if (!Number.isFinite(price) || !Number.isFinite(tickSz) || tickSz <= 0) return price;
@@ -57,6 +63,8 @@ function calcMinSpacingPct(): number {
 
 function reset(): void {
   snapshot = { ...FLAT_SNAPSHOT };
+  seenFillIds = new Set<string>();
+  openLots = [];
 }
 
 export function getChopGridSnapshot(): ChopGridSnapshot {
@@ -115,6 +123,55 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
   snapshot.pendingOrderCount = (await getPendingOrders(instId)).length;
 }
 
+async function auditRecentGridFills(instId: string): Promise<void> {
+  const fills = await getRecentFills(instId, 50);
+  const ordered = [...fills].reverse();
+  for (const fill of ordered) {
+    if (!fill.ordId || seenFillIds.has(fill.ordId)) continue;
+    seenFillIds.add(fill.ordId);
+
+    const px = parseFloat(fill.fillPx);
+    const sz = parseFloat(fill.fillSz);
+    const fee = Math.abs(parseFloat(fill.fee ?? "0"));
+    if (!Number.isFinite(px) || !Number.isFinite(sz) || sz <= 0) continue;
+
+    if (fill.side === "buy" && fill.posSide === "long") {
+      openLots.push({ px, sz, fee });
+      continue;
+    }
+
+    if (fill.side !== "sell" || fill.posSide !== "long") continue;
+
+    let remaining = sz;
+    let grossPnl = 0;
+    let matchedQty = 0;
+    let accumulatedBuyFee = 0;
+
+    while (remaining > 0 && openLots.length > 0) {
+      const lot = openLots[0];
+      const matched = Math.min(remaining, lot.sz);
+      grossPnl += (px - lot.px) * matched;
+      accumulatedBuyFee += lot.fee * (matched / lot.sz);
+      matchedQty += matched;
+      remaining -= matched;
+      lot.sz -= matched;
+      if (lot.sz <= 1e-9) {
+        openLots.shift();
+      }
+    }
+
+    if (matchedQty <= 0) continue;
+
+    const sellFee = fee;
+    const totalFee = accumulatedBuyFee + sellFee;
+    const netPnl = grossPnl - totalFee;
+    const feeToProfit = grossPnl > 0 ? totalFee / grossPnl : Infinity;
+    logGrid(
+      `roundtrip qty=${matchedQty.toFixed(4)} gross=${grossPnl.toFixed(4)} fee=${totalFee.toFixed(4)} net=${netPnl.toFixed(4)} fee_ratio=${Number.isFinite(feeToProfit) ? feeToProfit.toFixed(3) : "inf"} sell_px=${px.toFixed(1)}`
+    );
+  }
+}
+
 export async function maybeRunChopGrid(
   instId: string,
   config: ChopGridConfig,
@@ -128,6 +185,7 @@ export async function maybeRunChopGrid(
     return { active: false, reason: "missing_market_meta_or_price", openedSeed: false };
   }
 
+  await auditRecentGridFills(instId);
   await syncGridPosition(instId);
 
   if (forceExit) {
