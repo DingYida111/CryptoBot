@@ -280,14 +280,14 @@ async function evaluateSignal() {
   if (!btcPrice) { log(`[WARN] No BTC price`); return null; }
   lastBtcPrice = btcPrice;
 
-  const candles = await fetchOkxKlines("BTC-USDT-SWAP", "15m", 60);
+  const candles = await fetchOkxKlines("15m", 60);
   if (candles.length > 0) {
     lastCandles = candles.map(okxToBinanceCandle);
   }
 
-  const upBid = await pollPolymarket();
-  const kronosProb = await getKronosProb();
-  const kronosResult = kronosProb;
+  const pmResult = await pollPolymarket("btc", WINDOW_DURATION_MINUTES); const upBid = pmResult?.upBid ?? 0.5;
+  const kronosResult = await getKronosProb(lastCandles);
+  
 
   if (kronosResult) {
     log(`[Kronos] prob_up=${kronosResult.probUp.toFixed(3)} delta=${kronosResult.deltaPercent.toFixed(4)}% latency=${kronosResult.latencyMs}ms`);
@@ -295,7 +295,7 @@ async function evaluateSignal() {
 
   const signal = scoreStrategy(lastCandles, upBid, Date.now() + WINDOW_DURATION_MINUTES * 60 * 1000, {
     ...DEFAULT_SCORING_CONFIG,
-  }, WINDOW_DURATION_MINUTES * 60, kronosProb);
+  }, WINDOW_DURATION_MINUTES * 60, kronosResult !== null ? kronosResult.probUp : null);
 
   return { signal, btcPrice, upBid, endTimestamp: Date.now() + WINDOW_DURATION_MINUTES * 60 * 1000 };
 }
