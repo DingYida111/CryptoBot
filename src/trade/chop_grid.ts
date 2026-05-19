@@ -155,7 +155,7 @@ function calcMinSpacingPct(): number {
   const makerFee = 0.0002;
   const roundTrip = makerFee * 2;
   const feeFloor = roundTrip * 4;
-  return Math.max(0.006, feeFloor);
+  return Math.max(0.005, feeFloor);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -523,22 +523,30 @@ function desiredGridOrders(config: ChopGridConfig, price: number, metaTickSz: nu
   const desired: string[] = [];
   const maxBuyLayers = maxBuyLayersAllowed(config);
   const maxSellLayers = maxSellLayersAllowed(config);
+  const szStr = String(Math.round(Math.max(1, config.orderSize)));
   for (let i = 1; i <= config.layers; i += 1) {
     const offset = base * spacing * i;
     if (i <= maxSellLayers) {
-      desired.push(`sell:${formatPrice(base + offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
+      desired.push(`sell:${formatPrice(base + offset, metaTickSz)}:${szStr}`);
     }
     if (i <= maxBuyLayers) {
-      desired.push(`buy:${formatPrice(base - offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
+      desired.push(`buy:${formatPrice(base - offset, metaTickSz)}:${szStr}`);
     }
   }
   return desired.sort();
 }
 
-function pendingGridOrderKeys(pending: PendingGridOrder[]): string[] {
+function pendingGridOrderKeys(pending: PendingGridOrder[], metaTickSz: number): string[] {
   return pending
     .filter((order) => order.posSide === "long" && (order.side === "buy" || order.side === "sell"))
-    .map((order) => `${order.side}:${order.px ?? ""}:${order.sz ?? ""}`)
+    .map((order) => {
+      // Normalize price to same format as desiredGridOrders (formatPrice)
+      const rawPx = parseFloat(order.px ?? "0");
+      const normalizedPx = Number.isFinite(rawPx) ? formatPrice(rawPx, metaTickSz) : (order.px ?? "");
+      const rawSz = parseFloat(order.sz ?? "0");
+      const normalizedSz = Number.isFinite(rawSz) ? String(Math.round(rawSz)) : (order.sz ?? "");
+      return `${order.side}:${normalizedPx}:${normalizedSz}`;
+    })
     .sort();
 }
 
@@ -549,7 +557,7 @@ function shouldRefreshGridOrders(
   metaTickSz: number
 ): { refresh: boolean; reason: string } {
   const desired = desiredGridOrders(config, price, metaTickSz);
-  const current = pendingGridOrderKeys(pending);
+  const current = pendingGridOrderKeys(pending, metaTickSz);
   if (current.length !== desired.length) {
     return { refresh: true, reason: `count_mismatch current=${current.length} desired=${desired.length}` };
   }

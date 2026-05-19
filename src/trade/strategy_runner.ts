@@ -63,8 +63,8 @@ const MAX_POS_SIZE_PCT = parseFloat(process.env.MAX_POS_SIZE_PCT ?? "0.20");
 const ENTRY_TIME_RATIO_MIN = parseFloat(process.env.ENTRY_TIME_RATIO_MIN ?? "0.2");
 
 const STEP_DOWN_LEVELS: { profitPct: number; closeFraction: number }[] = [
-  { profitPct: 1.0, closeFraction: 0.25 },
-  { profitPct: 2.0, closeFraction: 0.25 },
+  { profitPct: 0.3, closeFraction: 0.25 },
+  { profitPct: 0.7, closeFraction: 0.25 },
 ];
 
 interface PositionState {
