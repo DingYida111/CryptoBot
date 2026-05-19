@@ -171,13 +171,14 @@ export async function maybeRunChopGrid(
   }
 
   if (Math.abs(price - (snapshot.entryPrice ?? price)) / (snapshot.entryPrice ?? price) >= config.recenterPct) {
-    await cancelAllGridOrders(instId);
     snapshot.anchorPrice = price;
     snapshot.entryPrice = price;
     snapshot.reason = "recentering";
   }
 
-  await cancelAllGridOrders(instId);
-  await ensureGridOrders(instId, config, price, meta.tickSz);
+  if (snapshot.pendingOrderCount === 0 || snapshot.reason === "recentering") {
+    await cancelAllGridOrders(instId);
+    await ensureGridOrders(instId, config, price, meta.tickSz);
+  }
   return { active: true, reason: snapshot.reason, openedSeed: false };
 }
