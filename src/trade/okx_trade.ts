@@ -7,7 +7,7 @@
 import { retryWithInstantRetry } from "../utils/retry.js";
 
 const OKX_API = "https://www.okx.com";
-const USE_SIMULATED = true;
+const USE_LIVE_API = process.env.USE_LIVE_API === "true";
 
 interface RequestHeaders {
   "OK-ACCESS-KEY": string;
@@ -17,9 +17,6 @@ interface RequestHeaders {
   "x-simulated-trading"?: string;
 }
 
-/**
- * Sign OKX API request using HMAC SHA256
- */
 async function sign(
   timestamp: string,
   method: string,
@@ -34,18 +31,23 @@ async function sign(
   return hmac.digest("base64");
 }
 
-/**
- * Make an authenticated OKX API request
- */
 async function okxRequest<T = any>(
   method: "GET" | "POST" | "DELETE",
   path: string,
   body: string = "",
   needSimulated: boolean = false
 ): Promise<T> {
-  const key = process.env.OKX_API_KEY;
-  const secret = process.env.OKX_API_SECRET;
-  const passphrase = process.env.OKX_API_PASSPHRASE;
+  const isLive = USE_LIVE_API;
+  const key = isLive
+    ? (process.env.OKX_LIVE_API_KEY ?? process.env.OKX_API_KEY)
+    : process.env.OKX_API_KEY;
+  const secret = isLive
+    ? (process.env.OKX_LIVE_API_SECRET ?? process.env.OKX_API_SECRET)
+    : process.env.OKX_API_SECRET;
+  const passphrase = isLive
+    ? (process.env.OKX_LIVE_PASSPHRASE ?? process.env.OKX_API_PASSPHRASE)
+    : process.env.OKX_API_PASSPHRASE;
+
   if (!key || !secret || !passphrase) {
     throw new Error(
       "[OKX] Credentials not configured. Set OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE as environment variables."
@@ -62,7 +64,8 @@ async function okxRequest<T = any>(
     "Content-Type": "application/json",
   };
 
-  if (USE_SIMULATED && needSimulated) {
+  // x-simulated-trading: only for paper trading (not live), and only when needSimulated=true
+  if (!isLive && needSimulated) {
     headers["x-simulated-trading"] = "1";
   }
 
@@ -90,168 +93,87 @@ async function okxRequest<T = any>(
   return parsed;
 }
 
-// ─── Account ─────────────────────────────────────────────────────────────────
-
 export interface AccountBalance {
-  totalEq: string;          // Account equity in USD
-  isoEq: string;           // Isolated margin equity
-  adjEq: string;           // Adjusted equity
-  imr: string;             // Initial margin requirement
-  mmr: string;             // Maintenance margin requirement
-  upl: string;             // Unrealized PnL
-  currency: string;
+  totalEq: string; isoEq: string; adjEq: string;
+  imr: string; mmr: string; upl: string; currency: string;
 }
 
 export async function getAccountBalance(): Promise<AccountBalance[] | null> {
   try {
     const data = await okxRequest<{ code: string; data: AccountBalance[] }>(
-      "GET",
-      "/api/v5/account/balance",
-      "",
-      true
-    );
+      "GET", "/api/v5/account/balance", "", true);
     if (data.code === "0" && data.data) return data.data;
     console.error("getAccountBalance error:", data);
     return null;
-  } catch (e) {
-    console.error("getAccountBalance exception:", e);
-    return null;
-  }
+  } catch (e) { console.error("getAccountBalance exception:", e); return null; }
 }
 
-// ─── Position ────────────────────────────────────────────────────────────────
-
 export interface Position {
-  instId: string;
-  posSide: "long" | "short" | "net";
-  pos: string;             // Position size (contracts)
-  avgPx: string;           // Average entry price
-  upl: string;             // Unrealized PnL
-  liqPx: string;           // Liquidation price
-  margin: string;          // Margin allocated
-  leverage: string;        // Leverage multiplier
+  instId: string; posSide: "long" | "short" | "net"; pos: string;
+  avgPx: string; upl: string; liqPx: string; margin: string; leverage: string;
 }
 
 export async function getPositions(instId: string = "BTC-USDT-SWAP"): Promise<Position[]> {
   try {
     const data = await okxRequest<{ code: string; data: Position[] }>(
-      "GET",
-      `/api/v5/account/positions?instId=${instId}`,
-      "",
-      true
-    );
+      "GET", `/api/v5/account/positions?instId=${instId}`, "", true);
     if (data.code === "0") return data.data ?? [];
-    console.error("getPositions error:", data);
-    return [];
-  } catch (e) {
-    console.error("getPositions exception:", e);
-    return [];
-  }
+    console.error("getPositions error:", data); return [];
+  } catch (e) { console.error("getPositions exception:", e); return []; }
 }
-
-// ─── Orders ───────────────────────────────────────────────────────────────────
 
 export type OrderSide = "buy" | "sell";
 export type OrderType = "market" | "limit";
 export type PosSide = "long" | "short";
 
 export interface OrderRequest {
-  instId: string;
-  tdMode: "cross" | "isolated" | "cash";
-  side: OrderSide;
-  posSide?: PosSide;
-  ordType: OrderType;
-  sz: string;              // Size (contracts)
-  px?: string;            // Price (null for market order)
-  reduceOnly?: boolean;
+  instId: string; tdMode: "cross" | "isolated" | "cash";
+  side: OrderSide; posSide?: PosSide; ordType: OrderType;
+  sz: string; px?: string; reduceOnly?: boolean;
 }
 
-export interface OrderResult {
-  ordId: string;
-  clOrdId: string;
-  sCode: string;
-  sMsg: string;
-}
+export interface OrderResult { ordId: string; clOrdId: string; sCode: string; sMsg: string; }
 
 export async function placeOrder(req: OrderRequest): Promise<OrderResult | null> {
   try {
     const body = JSON.stringify(req);
     const data = await okxRequest<{ code: string; data: OrderResult[] }>(
-      "POST",
-      "/api/v5/trade/order",
-      body,
-      true
-    );
+      "POST", "/api/v5/trade/order", body, true);
     if (data.code === "0" && data.data?.[0]) {
       const r = data.data[0];
       console.log(`[OKX] Order placed: ordId=${r.ordId} clOrdId=${r.clOrdId} sCode=${r.sCode} ${r.sMsg}`);
       return r;
     }
-    console.error("placeOrder error:", data);
-    return null;
-  } catch (e) {
-    console.error("placeOrder exception:", e);
-    return null;
-  }
+    console.error("placeOrder error:", data); return null;
+  } catch (e) { console.error("placeOrder exception:", e); return null; }
 }
 
-/**
- * Buy UP (long) — goes long BTC-USDT-SWAP
- */
-export async function buyUp(instId: string = "BTC-USDT-SWAP", sz: string = "1"): Promise<OrderResult | null> {
-  return placeOrder({
-    instId,
-    tdMode: "cross",
-    side: "buy",
-    posSide: "long",
-    ordType: "market",
-    sz,
-  });
+export async function buyUp(instId = "BTC-USDT-SWAP", sz = "1") {
+  return placeOrder({ instId, tdMode: "cross", side: "buy", posSide: "long", ordType: "market", sz });
 }
 
-/**
- * Sell DOWN (short) — goes short BTC-USDT-SWAP
- */
-export async function sellDown(instId: string = "BTC-USDT-SWAP", sz: string = "1"): Promise<OrderResult | null> {
-  return placeOrder({
-    instId,
-    tdMode: "cross",
-    side: "sell",
-    posSide: "short",
-    ordType: "market",
-    sz,
-  });
+export async function sellDown(instId = "BTC-USDT-SWAP", sz = "1") {
+  return placeOrder({ instId, tdMode: "cross", side: "sell", posSide: "short", ordType: "market", sz });
 }
 
-/**
- * Close all positions
- */
-export async function closeAllPositions(instId: string = "BTC-USDT-SWAP"): Promise<void> {
+export async function closeAllPositions(instId = "BTC-USDT-SWAP") {
   const positions = await getPositions(instId);
   for (const pos of positions) {
     const sz = pos.pos;
     if (parseInt(sz) === 0) continue;
-    if (pos.posSide === "long" || pos.posSide === "net") {
+    if (pos.posSide === "long" || pos.posSide === "net")
       await placeOrder({ instId, tdMode: "cross", side: "sell", ordType: "market", sz, reduceOnly: true, posSide: "long" });
-    }
-    if (pos.posSide === "short" || pos.posSide === "net") {
+    if (pos.posSide === "short" || pos.posSide === "net")
       await placeOrder({ instId, tdMode: "cross", side: "buy", ordType: "market", sz, reduceOnly: true, posSide: "short" });
-    }
   }
 }
 
-/**
- * Close a portion of the position (partial profit-taking)
- * Returns the size actually closed, or 0 if no position
- */
-export async function closePositionPartially(instId: string = "BTC-USDT-SWAP", sz: string): Promise<string | null> {
+export async function closePositionPartially(instId = "BTC-USDT-SWAP", sz: string) {
   const positions = await getPositions(instId);
   const pos = positions[0];
   if (!pos || parseInt(pos.pos) === 0) return null;
-
   const actualSz = Math.min(parseInt(sz), parseInt(pos.pos)).toString();
   if (parseInt(actualSz) === 0) return null;
-
   if (pos.posSide === "long" || pos.posSide === "net") {
     const result = await placeOrder({ instId, tdMode: "cross", side: "sell", ordType: "market", sz: actualSz, reduceOnly: true, posSide: "long" });
     return result?.sCode === "0" ? actualSz : null;
@@ -263,65 +185,34 @@ export async function closePositionPartially(instId: string = "BTC-USDT-SWAP", s
   return null;
 }
 
-/**
- * Get pending orders
- */
-export async function getPendingOrders(instId: string = "BTC-USDT-SWAP"): Promise<any[]> {
+export async function getPendingOrders(instId = "BTC-USDT-SWAP") {
   try {
     const data = await okxRequest<{ code: string; data: any[] }>(
-      "GET",
-      `/api/v5/trade/orders-pending?instId=${instId}`,
-      "",
-      true
-    );
+      "GET", `/api/v5/trade/orders-pending?instId=${instId}`, "", true);
     if (data.code === "0") return data.data ?? [];
     return [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
-/**
- * Cancel an order
- */
-export async function cancelOrder(instId: string, ordId: string): Promise<boolean> {
+export async function cancelOrder(instId: string, ordId: string) {
   try {
     const body = JSON.stringify([{ instId, ordId }]);
     const data = await okxRequest<{ code: string }>(
-      "POST",
-      "/api/v5/trade/cancel-orders",
-      body,
-      true
-    );
+      "POST", "/api/v5/trade/cancel-orders", body, true);
     return data.code === "0";
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
-
-// ─── Order History ─────────────────────────────────────────────────────────────
 
 export interface FilledOrder {
-  instId: string;
-  ordId: string;
-  fillPx: string;
-  fillSz: string;
-  side: OrderSide;
-  posSide: PosSide;
-  fillTime: string;
+  instId: string; ordId: string; fillPx: string; fillSz: string;
+  side: OrderSide; posSide: PosSide; fillTime: string;
 }
 
-export async function getRecentFills(instId: string = "BTC-USDT-SWAP", limit: number = 10): Promise<FilledOrder[]> {
+export async function getRecentFills(instId = "BTC-USDT-SWAP", limit = 10) {
   try {
     const data = await okxRequest<{ code: string; data: FilledOrder[] }>(
-      "GET",
-      `/api/v5/trade/fills?instId=${instId}&limit=${limit}`,
-      "",
-      true
-    );
+      "GET", `/api/v5/trade/fills?instId=${instId}&limit=${limit}`, "", true);
     if (data.code === "0") return data.data ?? [];
     return [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
