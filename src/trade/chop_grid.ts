@@ -404,6 +404,10 @@ async function syncGridPosition(instId: string): Promise<void> {
 
   const entryPrice = parseFloat(active.avgPx);
   const inventory = Math.abs(parseInt(active.pos));
+  const prevActive = snapshot.active;
+  const prevEntryPrice = snapshot.entryPrice;
+  const prevInventory = snapshot.inventory;
+  const prevReason = snapshot.reason;
   snapshot = {
     ...snapshot,
     active: true,
@@ -412,13 +416,20 @@ async function syncGridPosition(instId: string): Promise<void> {
     inventory,
     reason: "synced",
   };
-  logTradeEvent("GRID", "position_synced", {
-    instId,
-    side: "long",
-    entryPrice: snapshot.entryPrice,
-    inventory: snapshot.inventory,
-    reason: snapshot.reason,
-  });
+  if (
+    !prevActive ||
+    prevEntryPrice !== snapshot.entryPrice ||
+    prevInventory !== snapshot.inventory ||
+    prevReason !== snapshot.reason
+  ) {
+    logTradeEvent("GRID", "position_synced", {
+      instId,
+      side: "long",
+      entryPrice: snapshot.entryPrice,
+      inventory: snapshot.inventory,
+      reason: snapshot.reason,
+    });
+  }
   persistState();
 }
 
