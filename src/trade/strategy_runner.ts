@@ -393,7 +393,14 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
   const windowEndTsSec = position.windowEndTimestamp ?? 0;
   const remainingSec = windowEndTsSec - nowSec;
   const remainingMins = remainingSec / 60;
-  if (remainingSec > 0 && remainingMins <= CLOSE_BEFORE_MINS && position.side !== null) {
+  if (remainingSec <= 0) {
+    log(`[EXIT] window_expired (${remainingMins.toFixed(1)}m from end) | pnl=${pnlPct.toFixed(2)}% | closing`);
+    await closeAllPositions("BTC-USDT-SWAP");
+    resetPosition();
+    return;
+  }
+
+  if (remainingMins <= CLOSE_BEFORE_MINS && position.side !== null) {
     log(`[EXIT] window_near_end (${remainingMins.toFixed(1)}m left) | pnl=${pnlPct.toFixed(2)}% | closing`);
     await closeAllPositions("BTC-USDT-SWAP");
     resetPosition();
@@ -444,7 +451,7 @@ async function tryClosePositionNoSignal(): Promise<boolean> {
   const remaining = (position.windowEndTimestamp ?? 0) - nowSec;
   const holdDurationMs = position.entryTime ? Date.now() - position.entryTime : 0;
   const closeBeforeSec = CLOSE_BEFORE_MINS * 60;
-  const windowClosingSoon = remaining < closeBeforeSec && remaining > 0;
+  const windowClosingSoon = remaining <= closeBeforeSec;
   const maxHoldingExceeded = holdDurationMs > regimeMaxHoldingMs(lastSignal);
 
   if (!windowClosingSoon && !maxHoldingExceeded) return false;
@@ -495,7 +502,9 @@ async function main(): Promise<void> {
 
       const { signal, btcPrice, upBid, endTimestamp } = evalResult;
       lastSignal = signal;
-      position.windowEndTimestamp = endTimestamp;
+      if (position.side === null || position.windowEndTimestamp === null) {
+        position.windowEndTimestamp = endTimestamp;
+      }
 
       const dir = signal.direction === "none" ? "—" : signal.direction.toUpperCase();
       const edge = signal.edge >= 0 ? `+${signal.edge.toFixed(3)}` : signal.edge.toFixed(3);
