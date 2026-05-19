@@ -51,7 +51,8 @@ function calcMinSpacingPct(): number {
   const takerFee = 0.0005;
   const makerFee = 0.0002;
   const roundTrip = makerFee * 2;
-  return Math.max(0.006, roundTrip * 2.5 + takerFee * 2);
+  const feeFloor = roundTrip * 4; // fee <= profit / 4
+  return Math.max(0.007, feeFloor);
 }
 
 function reset(): void {

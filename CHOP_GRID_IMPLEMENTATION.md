@@ -37,7 +37,7 @@ Use `CHOP` / `RANGE` as a dedicated long-inventory grid regime.
 - Breakout is a hard exit, not a re-center
 - Grid is flattened before regime switch or window end
 - Inventory is capped by `CHOP_GRID_MAX_INVENTORY`
-- Grid spacing should exceed the fee floor by a wide margin
+- Grid spacing should satisfy `round_trip_fee <= gross_grid_profit / 4`
 
 ## Agent Notes
 
