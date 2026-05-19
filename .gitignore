@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+secrets/
 *.log
 data/*.sqlite3
 logs/

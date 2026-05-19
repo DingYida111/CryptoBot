@@ -5,6 +5,7 @@
  */
 
 import { retryWithInstantRetry } from "../utils/retry.js";
+import { getOkxCredentialSet } from "../utils/secrets.js";
 
 const OKX_API = "https://www.okx.com";
 const USE_LIVE_API = process.env.USE_LIVE_API === "true";
@@ -38,19 +39,14 @@ async function okxRequest<T = any>(
   needSimulated: boolean = false
 ): Promise<T> {
   const isLive = USE_LIVE_API;
-  const key = isLive
-    ? (process.env.OKX_LIVE_API_KEY ?? process.env.OKX_API_KEY)
-    : process.env.OKX_API_KEY;
-  const secret = isLive
-    ? (process.env.OKX_LIVE_API_SECRET ?? process.env.OKX_API_SECRET)
-    : process.env.OKX_API_SECRET;
-  const passphrase = isLive
-    ? (process.env.OKX_LIVE_PASSPHRASE ?? process.env.OKX_API_PASSPHRASE)
-    : process.env.OKX_API_PASSPHRASE;
+  const creds = getOkxCredentialSet(isLive);
+  const key = creds.apiKey;
+  const secret = creds.apiSecret;
+  const passphrase = creds.apiPassphrase;
 
   if (!key || !secret || !passphrase) {
     throw new Error(
-      "[OKX] Credentials not configured. Set OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE as environment variables."
+      "[OKX] Credentials not configured. Set OKX credentials in env vars or secret files."
     );
   }
 

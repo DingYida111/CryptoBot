@@ -1,5 +1,6 @@
 import { config as dotenvConfig } from "dotenv";
 import { z } from "zod";
+import { getOkxCredentialSet } from "./utils/secrets.js";
 
 dotenvConfig();
 
@@ -56,15 +57,19 @@ if (!parsed.success) {
 }
 
 const env = parsed.data;
+const paperCreds = getOkxCredentialSet(false);
+const liveCreds = getOkxCredentialSet(true);
 
 function ensureTradingSecrets(): void {
   if (!env.ENABLE_TRADING) {
     return;
   }
+
+  const activeCreds = env.OKX_TRADING_MODE === "live" ? liveCreds : paperCreds;
   const missing = [
-    !env.OKX_API_KEY ? "OKX_API_KEY" : null,
-    !env.OKX_API_SECRET ? "OKX_API_SECRET" : null,
-    !env.OKX_API_PASSPHRASE ? "OKX_API_PASSPHRASE" : null,
+    !activeCreds.apiKey ? "OKX_API_KEY" : null,
+    !activeCreds.apiSecret ? "OKX_API_SECRET" : null,
+    !activeCreds.apiPassphrase ? "OKX_API_PASSPHRASE" : null,
   ].filter(Boolean);
 
   if (missing.length > 0) {
@@ -119,10 +124,11 @@ export function getStartupRiskSummary(): string[] {
 
 export function requireTradingEnv() {
   ensureTradingSecrets();
+  const activeCreds = env.OKX_TRADING_MODE === "live" ? liveCreds : paperCreds;
   return {
-    apiKey: env.OKX_API_KEY!,
-    apiSecret: env.OKX_API_SECRET!,
-    apiPassphrase: env.OKX_API_PASSPHRASE!,
+    apiKey: activeCreds.apiKey!,
+    apiSecret: activeCreds.apiSecret!,
+    apiPassphrase: activeCreds.apiPassphrase!,
     tradingMode: env.OKX_TRADING_MODE,
     allowLiveTrading: env.ALLOW_LIVE_TRADING,
     allowedIps: env.OKX_ALLOWED_IPS,
