@@ -250,7 +250,7 @@ async function evaluateSignal(): Promise<{
 
 // ─── Entry logic ──────────────────────────────────────────────────────────────
 
-async function tryOpenPosition(decision: TradeDecision, endTimestamp: number): Promise<boolean> {
+async function tryOpenPosition(decision: TradeDecision, signalEdge: number, endTimestamp: number): Promise<boolean> {
   // Entry timing guard: wait until enough of the window has elapsed
   const timeRatio = calcTimeRatio(endTimestamp, WINDOW_DURATION_MINUTES * 60);
   if (timeRatio < ENTRY_TIME_RATIO_MIN) {
@@ -265,7 +265,7 @@ async function tryOpenPosition(decision: TradeDecision, endTimestamp: number): P
     const range15min = last15.length >= 5
       ? Math.max(...last15.map(c => c.high)) - Math.min(...last15.map(c => c.low))
       : (lastBtcPrice ?? 76000) * 0.002;
-    const directionalEdge = Math.max(0, (Math.abs(decision.direction === "up" ? 0.6 : 0.4) - 0.5) * 2);
+    const directionalEdge = Math.abs(signalEdge);
     const expectedProfit = directionalEdge * range15min * CONTRACT_SIZE;
     if (expectedProfit < feeRoundTrip) {
       log(`[SKIP] EV≈${expectedProfit.toFixed(4)} < fee_spread=${feeRoundTrip.toFixed(4)} | range=${range15min.toFixed(0)}`);
@@ -489,7 +489,7 @@ async function main(): Promise<void> {
       } else {
         const decision = makeTradeDecision(signal, upBid, lastCandles);
         if (decision) {
-          await tryOpenPosition(decision, endTimestamp);
+          await tryOpenPosition(decision, signal.edge, endTimestamp);
         }
       }
 
