@@ -94,6 +94,24 @@ interface RoundTripRow {
   created_at: number;
 }
 
+interface ExitAuditRow {
+  inst_id: string;
+  exit_time: number;
+  reason: string;
+  exit_price: number | null;
+  anchor_price: number | null;
+  entry_price: number | null;
+  inventory_before: number;
+  open_lots_before: number;
+  pending_order_count: number;
+  round_trip_delta: number;
+  gross_pnl_delta: number;
+  fee_delta: number;
+  net_pnl_delta: number;
+  active_before: number;
+  created_at: number;
+}
+
 interface PendingGridOrder {
   ordId?: string;
   side?: "buy" | "sell";
@@ -138,6 +156,10 @@ function calcMinSpacingPct(): number {
   const roundTrip = makerFee * 2;
   const feeFloor = roundTrip * 4;
   return Math.max(0.006, feeFloor);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function maxBuyLayersAllowed(config: ChopGridConfig): number {
@@ -208,6 +230,28 @@ function getDbReady() {
 
       CREATE INDEX IF NOT EXISTS idx_chop_grid_roundtrips_inst_time
         ON chop_grid_roundtrips(inst_id, fill_time DESC);
+
+      CREATE TABLE IF NOT EXISTS chop_grid_exits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        inst_id TEXT NOT NULL,
+        exit_time INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        exit_price REAL,
+        anchor_price REAL,
+        entry_price REAL,
+        inventory_before REAL NOT NULL,
+        open_lots_before INTEGER NOT NULL,
+        pending_order_count INTEGER NOT NULL,
+        round_trip_delta INTEGER NOT NULL,
+        gross_pnl_delta REAL NOT NULL,
+        fee_delta REAL NOT NULL,
+        net_pnl_delta REAL NOT NULL,
+        active_before INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_chop_grid_exits_inst_time
+        ON chop_grid_exits(inst_id, exit_time DESC);
     `);
     schemaReady = true;
     loadState(db);
@@ -399,6 +443,53 @@ function persistRoundTrip(roundTrip: {
     Date.now()
   );
   logTradeEvent("GRID", "roundtrip_recorded", roundTrip);
+}
+
+function persistExitAudit(audit: Omit<ExitAuditRow, "inst_id" | "created_at">): void {
+  const db = getDbReady();
+  db.prepare(`
+    INSERT INTO chop_grid_exits (
+      inst_id, exit_time, reason, exit_price, anchor_price, entry_price,
+      inventory_before, open_lots_before, pending_order_count,
+      round_trip_delta, gross_pnl_delta, fee_delta, net_pnl_delta,
+      active_before, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    INST_ID,
+    audit.exit_time,
+    audit.reason,
+    audit.exit_price,
+    audit.anchor_price,
+    audit.entry_price,
+    audit.inventory_before,
+    audit.open_lots_before,
+    audit.pending_order_count,
+    audit.round_trip_delta,
+    audit.gross_pnl_delta,
+    audit.fee_delta,
+    audit.net_pnl_delta,
+    audit.active_before,
+    Date.now()
+  );
+  logTradeEvent("GRID", "exit_audited", audit);
+}
+
+function currentAuditTotals() {
+  return {
+    roundTripCount: stats.roundTripCount,
+    grossPnl: stats.grossPnl,
+    fee: stats.fee,
+    netPnl: stats.netPnl,
+  };
+}
+
+function diffAuditTotals(before: ReturnType<typeof currentAuditTotals>) {
+  return {
+    round_trip_delta: stats.roundTripCount - before.roundTripCount,
+    gross_pnl_delta: stats.grossPnl - before.grossPnl,
+    fee_delta: stats.fee - before.fee,
+    net_pnl_delta: stats.netPnl - before.netPnl,
+  };
 }
 
 function recomputeStatsFromState(): void {
@@ -684,8 +775,31 @@ export async function maybeRunChopGrid(
   await syncGridPosition(instId);
 
   if (forceExit) {
+    const auditStart = currentAuditTotals();
+    const snapshotBefore = { ...snapshot };
+    const openLotsBefore = openLots.length;
+    await sleep(250);
+    await auditRecentGridFills(instId);
     await cancelAllGridOrders(instId);
     await closeAllPositions(instId);
+    await sleep(250);
+    await auditRecentGridFills(instId);
+    const delta = diffAuditTotals(auditStart);
+    persistExitAudit({
+      exit_time: Date.now(),
+      reason: "force_exit",
+      exit_price: price,
+      anchor_price: snapshotBefore.anchorPrice,
+      entry_price: snapshotBefore.entryPrice,
+      inventory_before: snapshotBefore.inventory,
+      open_lots_before: openLotsBefore,
+      pending_order_count: snapshotBefore.pendingOrderCount,
+      round_trip_delta: delta.round_trip_delta,
+      gross_pnl_delta: delta.gross_pnl_delta,
+      fee_delta: delta.fee_delta,
+      net_pnl_delta: delta.net_pnl_delta,
+      active_before: snapshotBefore.active ? 1 : 0,
+    });
     reset();
     return { active: false, reason: "force_exit", openedSeed: false };
   }
@@ -725,8 +839,31 @@ export async function maybeRunChopGrid(
   const anchor = snapshot.anchorPrice ?? price;
   const breakout = Math.abs(price - anchor) / anchor >= config.breakoutPct;
   if (breakout) {
+    const auditStart = currentAuditTotals();
+    const snapshotBefore = { ...snapshot };
+    const openLotsBefore = openLots.length;
+    await sleep(250);
+    await auditRecentGridFills(instId);
     await cancelAllGridOrders(instId);
     await closeAllPositions(instId);
+    await sleep(250);
+    await auditRecentGridFills(instId);
+    const delta = diffAuditTotals(auditStart);
+    persistExitAudit({
+      exit_time: Date.now(),
+      reason: "breakout_stop",
+      exit_price: price,
+      anchor_price: snapshotBefore.anchorPrice,
+      entry_price: snapshotBefore.entryPrice,
+      inventory_before: snapshotBefore.inventory,
+      open_lots_before: openLotsBefore,
+      pending_order_count: snapshotBefore.pendingOrderCount,
+      round_trip_delta: delta.round_trip_delta,
+      gross_pnl_delta: delta.gross_pnl_delta,
+      fee_delta: delta.fee_delta,
+      net_pnl_delta: delta.net_pnl_delta,
+      active_before: snapshotBefore.active ? 1 : 0,
+    });
     logTradeEvent("GRID", "exit_breakout", {
       instId,
       price,
