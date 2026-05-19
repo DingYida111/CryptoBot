@@ -148,12 +148,34 @@ export async function placeOrder(req: OrderRequest): Promise<OrderResult | null>
   } catch (e) { console.error("placeOrder exception:", e); return null; }
 }
 
+export async function placeLimitOrder(
+  req: Omit<OrderRequest, "ordType"> & { px: string }
+): Promise<OrderResult | null> {
+  return placeOrder({ ...req, ordType: "limit" });
+}
+
 export async function buyUp(instId = "BTC-USDT-SWAP", sz = "1") {
   return placeOrder({ instId, tdMode: "cross", side: "buy", posSide: "long", ordType: "market", sz });
 }
 
 export async function sellDown(instId = "BTC-USDT-SWAP", sz = "1") {
   return placeOrder({ instId, tdMode: "cross", side: "sell", posSide: "short", ordType: "market", sz });
+}
+
+export async function placeGridBuyLong(instId = "BTC-USDT-SWAP", sz = "1", px = "") {
+  return placeLimitOrder({ instId, tdMode: "cross", side: "buy", posSide: "long", sz, px });
+}
+
+export async function placeGridSellLong(instId = "BTC-USDT-SWAP", sz = "1", px = "") {
+  return placeLimitOrder({ instId, tdMode: "cross", side: "sell", posSide: "long", sz, px, reduceOnly: true });
+}
+
+export async function placeGridBuyShort(instId = "BTC-USDT-SWAP", sz = "1", px = "") {
+  return placeLimitOrder({ instId, tdMode: "cross", side: "buy", posSide: "short", sz, px, reduceOnly: true });
+}
+
+export async function placeGridSellShort(instId = "BTC-USDT-SWAP", sz = "1", px = "") {
+  return placeLimitOrder({ instId, tdMode: "cross", side: "sell", posSide: "short", sz, px });
 }
 
 export async function closeAllPositions(instId = "BTC-USDT-SWAP") {

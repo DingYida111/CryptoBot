@@ -5,6 +5,14 @@
 
 const OKX_PUBLIC_API = "https://www.okx.com";
 
+export interface OkxInstrumentMeta {
+  tickSz: number;
+  lotSz: number;
+  minSz: number;
+}
+
+let instrumentMetaCache: { at: number; meta: OkxInstrumentMeta | null } | null = null;
+
 /**
  * Fetch current BTC/USDT perpetual swap price from OKX
  * Returns the last traded price
@@ -24,6 +32,34 @@ export async function fetchBtcPrice(): Promise<number | null> {
     if (!Number.isFinite(last) || last <= 0) return null;
 
     return last;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchBtcSwapMeta(): Promise<OkxInstrumentMeta | null> {
+  if (instrumentMetaCache && Date.now() - instrumentMetaCache.at < 60 * 60 * 1000) {
+    return instrumentMetaCache.meta;
+  }
+
+  try {
+    const url = `${OKX_PUBLIC_API}/api/v5/public/instruments?instType=SWAP&instId=BTC-USDT-SWAP`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+
+    const data = await response.json() as any;
+    const item = data?.data?.[0];
+    if (data?.code !== "0" || !item) return null;
+
+    const meta: OkxInstrumentMeta = {
+      tickSz: parseFloat(item.tickSz),
+      lotSz: parseFloat(item.lotSz),
+      minSz: parseFloat(item.minSz),
+    };
+    if (![meta.tickSz, meta.lotSz, meta.minSz].every((v) => Number.isFinite(v) && v > 0)) return null;
+
+    instrumentMetaCache = { at: Date.now(), meta };
+    return meta;
   } catch {
     return null;
   }

@@ -1,0 +1,44 @@
+# CHOP Grid Implementation
+
+## Goal
+
+Use `CHOP` / `RANGE` as a dedicated long-inventory grid regime.
+
+## Behavior
+
+- Seed one long position when the regime enters `CHOP` / `RANGE`
+- Place staggered sell orders above the anchor price
+- Place staggered buy orders below the anchor price
+- Keep re-centering while price stays inside the band
+- Exit fully on breakout, regime flip, window end, or max holding
+
+## Parameters
+
+- `CHOP_GRID_LAYERS`
+- `CHOP_GRID_SPACING_PCT`
+- `CHOP_GRID_ORDER_SIZE`
+- `CHOP_GRID_MAX_INVENTORY`
+- `CHOP_GRID_RECENTER_PCT`
+- `CHOP_GRID_BREAKOUT_PCT`
+- `CHOP_GRID_COOLDOWN_MS`
+
+## Execution Flow
+
+1. `strategy_runner.ts` evaluates regime.
+2. If regime is `TREND_UP` / `TREND_DOWN`, keep the existing directional logic.
+3. If regime is `CHOP` / `RANGE`, hand control to `chop_grid.ts`.
+4. `chop_grid.ts` maintains one long seed plus ladder orders.
+5. Any breakout closes inventory and cancels pending grid orders.
+
+## Risk Rules
+
+- Grid only runs in `CHOP` / `RANGE`
+- Breakout is a hard exit, not a re-center
+- Grid is flattened before regime switch or window end
+- Inventory is capped by `CHOP_GRID_MAX_INVENTORY`
+
+## Agent Notes
+
+- Keep the grid module separate from trend logic
+- Do not reuse the directional stop-loss logic on grid inventory
+- Prefer config-driven changes over code changes for tuning

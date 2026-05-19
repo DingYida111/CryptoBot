@@ -15,6 +15,7 @@ import {
   sellDown,
   getAccountBalance,
 } from "./okx_trade.js";
+import { getChopGridSnapshot, maybeRunChopGrid } from "./chop_grid.js";
 import { scoreStrategy, DEFAULT_SCORING_CONFIG } from "../strategy/scoring.js";
 import { getKronosProb, isKronosReady } from "../strategy/kronos.js";
 import { fetchOkxKlines, okxToBinanceCandle } from "../monitor/okx_klines.js";
@@ -33,6 +34,15 @@ const MAX_POSITION_SIZE = APP_CONFIG.maxPositionSize;
 const ENABLE_TRADING = APP_CONFIG.enableTrading;
 const CLOSE_BEFORE_MINS = APP_CONFIG.closeBeforeMins;
 const MAX_HOLDING_MS = APP_CONFIG.maxHoldingMs;
+const CHOP_GRID_CONFIG = {
+  layers: APP_CONFIG.chopGridLayers,
+  spacingPct: APP_CONFIG.chopGridSpacingPct,
+  orderSize: APP_CONFIG.chopGridOrderSize,
+  maxInventory: APP_CONFIG.chopGridMaxInventory,
+  recenterPct: APP_CONFIG.chopGridRecenterPct,
+  breakoutPct: APP_CONFIG.chopGridBreakoutPct,
+  cooldownMs: APP_CONFIG.chopGridCooldownMs,
+} as const;
 const REGIME_MODE = APP_CONFIG.regimeMode;
 const MIN_REGIME_SCORE = APP_CONFIG.minRegimeScore;
 const TREND_WIDTH_MIN_PCT = APP_CONFIG.trendWidthMinPct;
@@ -68,6 +78,7 @@ interface PositionState {
   breakEvenPct: number;
   breakEvenActivated: boolean;
   isContrarian: boolean;
+  isGrid: boolean;
   regimeSnapshot: StrategySignal["regimeSnapshot"] | null;
 }
 
@@ -92,6 +103,7 @@ const FLAT_POSITION: PositionState = {
   breakEvenPct: BREAK_EVEN_PCT,
   breakEvenActivated: false,
   isContrarian: false,
+  isGrid: false,
   regimeSnapshot: null,
 };
 
@@ -158,7 +170,12 @@ function isExtremeVolatility(candles: Candle[], btcPrice: number): boolean {
   return (high - low) / btcPrice > EXTREME_VOL_THRESHOLD;
 }
 
+function isChopLike(signal: StrategySignal): signal is StrategySignal & { regime: "CHOP" | "RANGE" } {
+  return signal.regime === "CHOP" || signal.regime === "RANGE";
+}
+
 function makeTradeDecision(signal: StrategySignal, upBid: number, candles: Candle[]): TradeDecision | null {
+  if (isChopLike(signal)) return null;
   const btcRef = lastBtcPrice ?? 76000;
 
   if (upBid > PM_CONTRARIAN_HIGH) {
@@ -210,6 +227,9 @@ async function syncPosition(): Promise<void> {
   const side = pos.posSide === "short" ? "short" : "long";
   const avgPx = parseFloat(pos.avgPx);
   const sz = parseFloat(pos.pos);
+  const gridSnapshot = getChopGridSnapshot();
+  const isGridPosition = gridSnapshot.active && side === "long";
+  position.isGrid = isGridPosition;
 
   if (position.side !== side || position.entryPrice !== avgPx) {
     log(`[POS] Synced: ${side.toUpperCase()} | avgPx=${avgPx} | sz=${sz} | unrealized=${pos.upl}`);
@@ -313,6 +333,7 @@ async function tryOpenPosition(
       breakEvenPct,
       breakEvenActivated: false,
       isContrarian: decision.source === "contrarian",
+      isGrid: false,
       regimeSnapshot: signal.regimeSnapshot ?? signal.regime,
     };
     log(`[TRADE] Opened ${openedSide} | ordId=${result.ordId} | BTC≈${lastBtcPrice} | size=${sizeStr} contracts`);
@@ -382,6 +403,10 @@ async function tryStepDownPosition(signal: StrategySignal): Promise<void> {
 
 async function tryClosePosition(signal: StrategySignal): Promise<void> {
   if (position.side === null || position.entryPrice === null || position.originalSize === null) return;
+
+  if (position.isGrid) {
+    return;
+  }
 
   const btcRef = lastBtcPrice ?? 76000;
   const elapsedMs = Date.now() - (position.entryTime ?? 0);
@@ -462,9 +487,45 @@ async function tryClosePositionNoSignal(): Promise<boolean> {
     return false;
   }
 
+  if (position.isGrid) {
+    await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", lastBtcPrice, true);
+    resetPosition();
+    return true;
+  }
+
   log(`[TRADE] closeAllPositions — reason=${reason}`);
   await closeAllPositions("BTC-USDT-SWAP");
   resetPosition();
+  return true;
+}
+
+async function tryManageGridPosition(signal: StrategySignal, btcPrice: number): Promise<boolean> {
+  if (!position.isGrid) return false;
+
+  const shouldExitGrid = !isChopLike(signal);
+  if (shouldExitGrid) {
+    log(`[GRID] Regime shifted to ${signal.regime} — closing grid inventory`);
+    await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", btcPrice, true);
+    resetPosition();
+    return true;
+  }
+
+  const nowSec = Date.now() / 1000;
+  const remainingSec = (position.windowEndTimestamp ?? 0) - nowSec;
+  const elapsedMs = Date.now() - (position.entryTime ?? 0);
+  if (remainingSec <= CLOSE_BEFORE_MINS * 60 || elapsedMs >= MAX_HOLDING_MS) {
+    const reason = remainingSec <= CLOSE_BEFORE_MINS * 60 ? "window_near_end" : "max_holding";
+    log(`[GRID] ${reason} — closing grid inventory`);
+    await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", btcPrice, true);
+    resetPosition();
+    return true;
+  }
+
+  const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false);
+  if (!gridResult.active) {
+    resetPosition();
+    return true;
+  }
   return true;
 }
 
@@ -474,6 +535,7 @@ async function main(): Promise<void> {
   log(`Config: ${getStartupRiskSummary().join(" | ")}`);
   log(`Risk main: stop=${STOP_LOSS_PCT}% | break_even=${BREAK_EVEN_PCT}%`);
   log(`Risk contrarian: stop=${CONTRARIAN_STOP_LOSS_PCT}% | break_even=${CONTRARIAN_BREAK_EVEN_PCT}% | PM_H=${PM_CONTRARIAN_HIGH} | PM_L=${PM_CONTRARIAN_LOW} | vol_threshold=${EXTREME_VOL_THRESHOLD}`);
+  log(`Risk chop-grid: layers=${CHOP_GRID_CONFIG.layers} | spacing=${(CHOP_GRID_CONFIG.spacingPct * 100).toFixed(2)}% | orderSize=${CHOP_GRID_CONFIG.orderSize} | maxInventory=${CHOP_GRID_CONFIG.maxInventory} | recenter=${(CHOP_GRID_CONFIG.recenterPct * 100).toFixed(2)}% | breakout=${(CHOP_GRID_CONFIG.breakoutPct * 100).toFixed(2)}%`);
   log(`Sizing: MAX_POS_SIZE_PCT=${(MAX_POS_SIZE_PCT * 100).toFixed(0)}% | Kelly formula`);
 
   await syncPosition();
@@ -513,10 +575,41 @@ async function main(): Promise<void> {
         log(`[REGIME] score=${signal.regimeScore.toFixed(2)} reason=${signal.regimeReason ?? "n/a"} mode=${REGIME_MODE}`);
       }
 
-      if (position.side !== null) {
+      if (position.side !== null && position.isGrid) {
+        await tryManageGridPosition(signal, btcPrice);
+      } else if (position.side !== null) {
         await tryStepDownPosition(signal);
         await tryClosePosition(signal);
       } else {
+        if (isChopLike(signal)) {
+          if (!ENABLE_TRADING) {
+            log(`[SIM][GRID] Would run long-inventory chop grid | regime=${signal.regime} | BTC=$${btcPrice}`);
+          } else {
+            const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false);
+            log(`[GRID] ${gridResult.reason} | active=${gridResult.active}`);
+            if (gridResult.openedSeed) {
+              position = {
+                side: "long",
+                entryPrice: btcPrice,
+                entryTime: Date.now(),
+                slug: null,
+                windowEndTimestamp: endTimestamp,
+                orderId: null,
+                originalSize: CHOP_GRID_CONFIG.orderSize,
+                lastStepIndex: -1,
+                stopLossPct: 0,
+                breakEvenPct: 0,
+                breakEvenActivated: false,
+                isContrarian: false,
+                isGrid: true,
+                regimeSnapshot: signal.regime,
+              };
+            }
+          }
+          await sleep(SIGNAL_INTERVAL_MS);
+          continue;
+        }
+
         const decision = makeTradeDecision(signal, upBid, lastCandles);
         if (decision) {
           log(`[DECISION] ${decision.source} | ${decision.reason}`);
@@ -535,7 +628,11 @@ process.on("SIGINT", async () => {
   log(`Shutting down...`);
   if (position.side !== null) {
     log(`Closing open position before exit...`);
-    await closeAllPositions("BTC-USDT-SWAP");
+    if (position.isGrid) {
+      await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", lastBtcPrice, true);
+    } else {
+      await closeAllPositions("BTC-USDT-SWAP");
+    }
   }
   process.exit(0);
 });
