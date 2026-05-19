@@ -137,13 +137,19 @@ function calcMinSpacingPct(): number {
   const makerFee = 0.0002;
   const roundTrip = makerFee * 2;
   const feeFloor = roundTrip * 4;
-  return Math.max(0.007, feeFloor);
+  return Math.max(0.006, feeFloor);
 }
 
 function maxBuyLayersAllowed(config: ChopGridConfig): number {
   const remainingCapacity = Math.max(0, config.maxInventory - snapshot.inventory);
   if (remainingCapacity <= 0) return 0;
-  return Math.floor(remainingCapacity / Math.max(1, config.orderSize));
+  return Math.min(config.layers, Math.floor(remainingCapacity / Math.max(1, config.orderSize)));
+}
+
+function maxSellLayersAllowed(config: ChopGridConfig): number {
+  const sellCapacity = Math.max(0, snapshot.inventory);
+  if (sellCapacity <= 0) return 0;
+  return Math.min(config.layers, Math.floor(sellCapacity / Math.max(1, config.orderSize)));
 }
 
 function getDbReady() {
@@ -425,9 +431,12 @@ function desiredGridOrders(config: ChopGridConfig, price: number, metaTickSz: nu
   const base = snapshot.anchorPrice ?? price;
   const desired: string[] = [];
   const maxBuyLayers = maxBuyLayersAllowed(config);
+  const maxSellLayers = maxSellLayersAllowed(config);
   for (let i = 1; i <= config.layers; i += 1) {
     const offset = base * spacing * i;
-    desired.push(`sell:${formatPrice(base + offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
+    if (i <= maxSellLayers) {
+      desired.push(`sell:${formatPrice(base + offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
+    }
     if (i <= maxBuyLayers) {
       desired.push(`buy:${formatPrice(base - offset, metaTickSz)}:${Math.max(1, config.orderSize)}`);
     }
@@ -506,13 +515,16 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
   const base = snapshot.anchorPrice ?? price;
   const orders: Promise<any>[] = [];
   const maxBuyLayers = maxBuyLayersAllowed(config);
+  const maxSellLayers = maxSellLayersAllowed(config);
 
   for (let i = 1; i <= config.layers; i++) {
     const offset = base * spacing * i;
     const buyPx = formatPrice(base - offset, metaTickSz);
     const sellPx = formatPrice(base + offset, metaTickSz);
 
-    orders.push(placeGridSellLong(instId, size, sellPx));
+    if (i <= maxSellLayers) {
+      orders.push(placeGridSellLong(instId, size, sellPx));
+    }
     if (i <= maxBuyLayers) {
       orders.push(placeGridBuyLong(instId, size, buyPx));
     }
@@ -528,6 +540,7 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
     inventory: snapshot.inventory,
     pendingOrderCount: snapshot.pendingOrderCount,
     layers: config.layers,
+    sellLayersPlaced: maxSellLayers,
     buyLayersPlaced: maxBuyLayers,
     spacingPct: spacing,
   });
