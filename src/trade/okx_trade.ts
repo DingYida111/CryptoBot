@@ -6,6 +6,7 @@
 
 import { retryWithInstantRetry } from "../utils/retry.js";
 import { getOkxCredentialSet } from "../utils/secrets.js";
+import { logTradeEvent } from "./trade_logger.js";
 
 const OKX_API = "https://www.okx.com";
 const USE_LIVE_API = process.env.USE_LIVE_API === "true";
@@ -137,11 +138,46 @@ export async function placeOrder(req: OrderRequest): Promise<OrderResult | null>
       "POST", "/api/v5/trade/order", body, true);
     if (data.code === "0" && data.data?.[0]) {
       const r = data.data[0];
-      console.log(`[OKX] Order placed: ordId=${r.ordId} clOrdId=${r.clOrdId} sCode=${r.sCode} ${r.sMsg}`);
+      logTradeEvent("OKX", "order_placed", {
+        ordId: r.ordId,
+        clOrdId: r.clOrdId,
+        sCode: r.sCode,
+        sMsg: r.sMsg,
+        instId: req.instId,
+        side: req.side,
+        posSide: req.posSide ?? null,
+        ordType: req.ordType,
+        sz: req.sz,
+        px: req.px ?? null,
+        reduceOnly: req.reduceOnly ?? null,
+      });
       return r;
     }
+    logTradeEvent("OKX", "order_failed", {
+      instId: req.instId,
+      side: req.side,
+      posSide: req.posSide ?? null,
+      ordType: req.ordType,
+      sz: req.sz,
+      px: req.px ?? null,
+      reduceOnly: req.reduceOnly ?? null,
+      response: data,
+    });
     console.error("placeOrder error:", data); return null;
-  } catch (e) { console.error("placeOrder exception:", e); return null; }
+  } catch (e) {
+    logTradeEvent("OKX", "order_exception", {
+      instId: req.instId,
+      side: req.side,
+      posSide: req.posSide ?? null,
+      ordType: req.ordType,
+      sz: req.sz,
+      px: req.px ?? null,
+      reduceOnly: req.reduceOnly ?? null,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    console.error("placeOrder exception:", e);
+    return null;
+  }
 }
 
 export async function placeLimitOrder(

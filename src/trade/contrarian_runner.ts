@@ -18,6 +18,7 @@ import {
   sellDown,
   getAccountBalance,
 } from "./okx_trade.js";
+import { logTradeEvent } from "./trade_logger.js";
 import { fetchBtcPrice } from "../monitor/okx.js";
 import { pollPolymarket } from "../monitor/polymarket.js";
 import { fetchOkxKlines, okxToBinanceCandle } from "../monitor/okx_klines.js";
@@ -108,6 +109,12 @@ async function syncPosition(): Promise<void> {
     position.entryPrice = avgPx;
     position.entryTime = Date.now();
     position.orderId = null;
+    logTradeEvent("CONTRARIAN", "position_synced", {
+      side,
+      avgPx,
+      size: parseFloat(pos.pos),
+      upl: parseFloat(pos.upl),
+    });
   }
 }
 
@@ -199,6 +206,14 @@ async function tryOpenPosition(): Promise<boolean> {
   }
 
   log(`[TRADE] sellDown — contrarian SHORT | PM=${pmUpProb.toFixed(3)} size=${size}`);
+  logTradeEvent("CONTRARIAN", "open_submit", {
+    side: "short",
+    size,
+    pmUpProb,
+    btcRef,
+    endTimestamp,
+    stopLossPct: STOP_LOSS_PCT,
+  });
   const result = await sellDown("BTC-USDT-SWAP", size);
 
   if (result?.sCode === "0") {
@@ -214,10 +229,24 @@ async function tryOpenPosition(): Promise<boolean> {
       breakEvenActivated: false,
     };
     log(`[TRADE] Opened SHORT | ordId=${result.ordId} | BTC≈${lastBtcPrice} | PM=${pmUpProb.toFixed(3)} | stop=${STOP_LOSS_PCT}%`);
+    logTradeEvent("CONTRARIAN", "open_filled", {
+      side: "short",
+      ordId: result.ordId,
+      entryPrice: lastBtcPrice,
+      size: BASE_POSITION_SIZE,
+      pmUpProb,
+      stopLossPct: STOP_LOSS_PCT,
+    });
     return true;
   }
 
   log(`[WARN] sellDown failed: ${JSON.stringify(result)}`);
+  logTradeEvent("CONTRARIAN", "open_failed", {
+    side: "short",
+    size,
+    pmUpProb,
+    result,
+  });
   return false;
 }
 
@@ -258,6 +287,15 @@ async function tryStepDownPosition(): Promise<void> {
   const closed = await closePositionPartially("BTC-USDT-SWAP", toClose.toString());
   if (closed) {
     log(`[TRADE] Step-down #${nextStepIndex + 1}: closed ${closed}/${currentSize} @ profit ${floatingPnlPct.toFixed(3)}%`);
+    logTradeEvent("CONTRARIAN", "partial_close", {
+      side: position.side,
+      stepIndex: nextStepIndex + 1,
+      closed,
+      currentSize,
+      profitPct: floatingPnlPct,
+      entryPrice: position.entryPrice,
+      lastPrice: lastBtcPrice,
+    });
     position.lastStepIndex = nextStepIndex;
     const remaining = await getPositions("BTC-USDT-SWAP");
     if (!remaining.length || parseInt(remaining[0].pos) === 0) {
@@ -268,6 +306,13 @@ async function tryStepDownPosition(): Promise<void> {
               : position.entryPrice - lastBtcPrice) * CONTRACT_SIZE
           : 0;
       log(`[TRADE] All closed | PnL≈${pnl.toFixed(4)} USD`);
+      logTradeEvent("CONTRARIAN", "position_fully_closed", {
+        side: position.side,
+        reason: "step_down",
+        pnl,
+        entryPrice: position.entryPrice,
+        exitPrice: lastBtcPrice,
+      });
       position = { ...FLAT_POSITION };
     }
   }
@@ -330,6 +375,15 @@ async function tryClosePosition(): Promise<boolean> {
   }
 
   log(`[TRADE] closeAllPositions — reason=${exitReason} remaining=${remaining.toFixed(0)}s hold=${(holdDurationMs/60000).toFixed(1)}m profit=${floatingPnlPct.toFixed(3)}%`);
+  logTradeEvent("CONTRARIAN", "position_exit", {
+    side: position.side,
+    reason: exitReason,
+    remainingSec: remaining,
+    holdMinutes: holdDurationMs / 60000,
+    profitPct: floatingPnlPct,
+    entryPrice: position.entryPrice,
+    exitPrice: lastBtcPrice,
+  });
   await closeAllPositions("BTC-USDT-SWAP");
 
   const pnl =
@@ -337,6 +391,12 @@ async function tryClosePosition(): Promise<boolean> {
       ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice) * CONTRACT_SIZE
       : 0;
   log(`[TRADE] Closed ${position.side?.toUpperCase()} | PnL≈${pnl.toFixed(4)} USD (BTC ${position.entryPrice}→${lastBtcPrice})`);
+  logTradeEvent("CONTRARIAN", "position_closed", {
+    side: position.side,
+    pnl,
+    entryPrice: position.entryPrice,
+    exitPrice: lastBtcPrice,
+  });
 
   position = { ...FLAT_POSITION };
   return true;

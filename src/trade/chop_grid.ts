@@ -1,4 +1,5 @@
 import { buyUp, closeAllPositions, getPendingOrders, getPositions, cancelOrder, placeGridBuyLong, placeGridSellLong, getRecentFills } from "./okx_trade.js";
+import { logTradeEvent } from "./trade_logger.js";
 import { getDb } from "../monitor/storage.js";
 import { fetchBtcSwapMeta, fetchBtcPrice } from "../monitor/okx.js";
 
@@ -226,6 +227,11 @@ function loadState(db = getDb()): void {
   } catch {
     openLots = [];
   }
+  if (snapshot.active && snapshot.side === "long" && openLots.length > 0) {
+    logGrid(
+      `state_restore active=${snapshot.active} inventory=${snapshot.inventory.toFixed(4)} lots=${openLots.length} reason=${snapshot.reason}`
+    );
+  }
   stats = {
     roundTripCount: row.round_trip_count,
     winCount: row.win_count,
@@ -296,10 +302,12 @@ function reset(): void {
 }
 
 export function getChopGridSnapshot(): ChopGridSnapshot {
+  getDbReady();
   return { ...snapshot };
 }
 
 export function getChopGridStats(): ChopGridStats {
+  getDbReady();
   return { ...stats };
 }
 
@@ -369,6 +377,7 @@ function persistRoundTrip(roundTrip: {
     roundTrip.feeRatio,
     Date.now()
   );
+  logTradeEvent("GRID", "roundtrip_recorded", roundTrip);
 }
 
 function recomputeStatsFromState(): void {
@@ -403,6 +412,13 @@ async function syncGridPosition(instId: string): Promise<void> {
     inventory,
     reason: "synced",
   };
+  logTradeEvent("GRID", "position_synced", {
+    instId,
+    side: "long",
+    entryPrice: snapshot.entryPrice,
+    inventory: snapshot.inventory,
+    reason: snapshot.reason,
+  });
   persistState();
 }
 
@@ -426,6 +442,15 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
   await Promise.allSettled(orders);
   snapshot.lastActionAt = Date.now();
   snapshot.pendingOrderCount = (await getPendingOrders(instId)).length;
+  logTradeEvent("GRID", "orders_refreshed", {
+    instId,
+    anchorPrice: snapshot.anchorPrice,
+    entryPrice: snapshot.entryPrice,
+    inventory: snapshot.inventory,
+    pendingOrderCount: snapshot.pendingOrderCount,
+    layers: config.layers,
+    spacingPct: spacing,
+  });
   persistState();
 }
 
@@ -455,6 +480,16 @@ async function auditRecentGridFills(instId: string): Promise<void> {
 
     if (fill.side === "buy" && fill.posSide === "long") {
       openLots.push({ px, sz, fee });
+      logTradeEvent("GRID", "fill_open", {
+        instId,
+        fillTime,
+        side: fill.side,
+        posSide: fill.posSide,
+        px,
+        sz,
+        fee,
+        openLots: openLots.length,
+      });
       if (fillTime > maxFillTime || (fillTime === maxFillTime && key > (maxFillKey ?? ""))) {
         maxFillTime = fillTime;
         maxFillKey = key;
@@ -521,6 +556,18 @@ async function auditRecentGridFills(instId: string): Promise<void> {
     logGrid(
       `roundtrip qty=${matchedQty.toFixed(4)} gross=${grossPnl.toFixed(4)} fee=${totalFee.toFixed(4)} net=${netPnl.toFixed(4)} fee_ratio=${Number.isFinite(feeToProfit) ? feeToProfit.toFixed(3) : "inf"} sell_px=${px.toFixed(1)} avg_fee_ratio=${stats.avgFeeRatio === null ? "n/a" : stats.avgFeeRatio.toFixed(3)} wins=${stats.winCount} losses=${stats.lossCount}`
     );
+    logTradeEvent("GRID", "fill_close", {
+      instId,
+      fillTime,
+      matchedQty,
+      buyVwap,
+      sellPx: px,
+      grossPnl,
+      fee: totalFee,
+      netPnl,
+      feeRatio: Number.isFinite(feeToProfit) ? feeToProfit : null,
+      remainingOpenLots: openLots.length,
+    });
   }
   if (maxFillTime > 0) {
     setFillCursor(maxFillTime, maxFillKey);
@@ -571,6 +618,15 @@ export async function maybeRunChopGrid(
       pendingOrderCount: 0,
       reason: `init_${regime}`,
     };
+    logTradeEvent("GRID", "seed_opened", {
+      instId,
+      regime,
+      anchorPrice: price,
+      entryPrice: price,
+      inventory: seedSize,
+      seedSize,
+      ordId: seed.ordId,
+    });
     persistState();
     await ensureGridOrders(instId, config, price, meta.tickSz);
     return { active: true, reason: snapshot.reason, openedSeed: true };
@@ -581,6 +637,13 @@ export async function maybeRunChopGrid(
   if (breakout) {
     await cancelAllGridOrders(instId);
     await closeAllPositions(instId);
+    logTradeEvent("GRID", "exit_breakout", {
+      instId,
+      price,
+      anchor: anchor,
+      breakoutPct: config.breakoutPct,
+      inventory: snapshot.inventory,
+    });
     reset();
     return { active: false, reason: "breakout_stop", openedSeed: false };
   }

@@ -16,6 +16,7 @@ import {
   getAccountBalance,
 } from "./okx_trade.js";
 import { getChopGridSnapshot, getChopGridStats, maybeRunChopGrid } from "./chop_grid.js";
+import { logTradeEvent } from "./trade_logger.js";
 import { scoreStrategy, DEFAULT_SCORING_CONFIG } from "../strategy/scoring.js";
 import { getKronosProb, isKronosReady } from "../strategy/kronos.js";
 import { fetchOkxKlines, okxToBinanceCandle } from "../monitor/okx_klines.js";
@@ -241,6 +242,13 @@ async function syncPosition(): Promise<void> {
     position.originalSize = sz;
     position.lastStepIndex = -1;
     position.breakEvenActivated = false;
+    logTradeEvent("TRADE", "position_synced", {
+      side,
+      avgPx,
+      size: sz,
+      grid: isGridPosition,
+      source: isGridPosition ? "grid" : "normal",
+    });
   }
 }
 
@@ -313,9 +321,31 @@ async function tryOpenPosition(
   let result = null;
   if (decision.direction === "up") {
     log(`[TRADE] buyUp | source=${decision.source} | ${decision.reason}`);
+    logTradeEvent("TRADE", "open_submit", {
+      direction: decision.direction,
+      source: decision.source,
+      reason: decision.reason,
+      size,
+      contracts: sizeStr,
+      btcRef,
+      stopLossPct,
+      breakEvenPct,
+      regime: signal.regime,
+    });
     result = await buyUp("BTC-USDT-SWAP", sizeStr);
   } else if (decision.direction === "down") {
     log(`[TRADE] sellDown | source=${decision.source} | ${decision.reason}`);
+    logTradeEvent("TRADE", "open_submit", {
+      direction: decision.direction,
+      source: decision.source,
+      reason: decision.reason,
+      size,
+      contracts: sizeStr,
+      btcRef,
+      stopLossPct,
+      breakEvenPct,
+      regime: signal.regime,
+    });
     result = await sellDown("BTC-USDT-SWAP", sizeStr);
   }
 
@@ -338,10 +368,31 @@ async function tryOpenPosition(
       regimeSnapshot: signal.regimeSnapshot ?? signal.regime,
     };
     log(`[TRADE] Opened ${openedSide} | ordId=${result.ordId} | BTC≈${lastBtcPrice} | size=${sizeStr} contracts`);
+    logTradeEvent("TRADE", "open_filled", {
+      side: position.side,
+      source: decision.source,
+      reason: decision.reason,
+      ordId: result.ordId,
+      entryPrice: position.entryPrice,
+      size: size,
+      contracts: sizeStr,
+      stopLossPct,
+      breakEvenPct,
+      regime: signal.regime,
+    });
     return true;
   }
 
   log(`[WARN] Order failed: ${JSON.stringify(result)}`);
+  logTradeEvent("TRADE", "open_failed", {
+    direction: decision.direction,
+    source: decision.source,
+    reason: decision.reason,
+    size,
+    contracts: sizeStr,
+    btcRef,
+    result,
+  });
   return false;
 }
 
@@ -390,6 +441,15 @@ async function tryStepDownPosition(signal: StrategySignal): Promise<void> {
   const closed = await closePositionPartially("BTC-USDT-SWAP", toClose.toString());
   if (closed) {
     log(`[TRADE] Step-down #${nextStepIndex + 1}: closed ${closed}/${currentSize} contracts @ profit ${floatingPnlPct.toFixed(3)}%`);
+    logTradeEvent("TRADE", "partial_close", {
+      side: position.side,
+      stepIndex: nextStepIndex + 1,
+      closed,
+      currentSize,
+      profitPct: floatingPnlPct,
+      entryPrice: position.entryPrice,
+      lastPrice: lastBtcPrice,
+    });
     position.lastStepIndex = nextStepIndex;
     const remaining = await getPositions("BTC-USDT-SWAP");
     if (!remaining.length || parseInt(remaining[0].pos) === 0) {
@@ -397,6 +457,13 @@ async function tryStepDownPosition(signal: StrategySignal): Promise<void> {
         ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice)
         : 0;
       log(`[TRADE] All closed | PnL≈${pnl.toFixed(2)} (BTC ${position.entryPrice}→${lastBtcPrice})`);
+      logTradeEvent("TRADE", "position_fully_closed", {
+        side: position.side,
+        reason: "step_down",
+        pnl,
+        entryPrice: position.entryPrice,
+        exitPrice: lastBtcPrice,
+      });
       resetPosition();
     }
   }
@@ -421,6 +488,15 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
   const remainingMins = remainingSec / 60;
   if (remainingSec <= 0) {
     log(`[EXIT] window_expired (${remainingMins.toFixed(1)}m from end) | pnl=${pnlPct.toFixed(2)}% | closing`);
+    logTradeEvent("TRADE", "position_exit", {
+      side: position.side,
+      reason: "window_expired",
+      pnlPct,
+      entryPrice: position.entryPrice,
+      exitPrice: btcRef,
+      remainingMins,
+      isGrid: position.isGrid,
+    });
     await closeAllPositions("BTC-USDT-SWAP");
     resetPosition();
     return;
@@ -428,6 +504,15 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
 
   if (remainingMins <= CLOSE_BEFORE_MINS && position.side !== null) {
     log(`[EXIT] window_near_end (${remainingMins.toFixed(1)}m left) | pnl=${pnlPct.toFixed(2)}% | closing`);
+    logTradeEvent("TRADE", "position_exit", {
+      side: position.side,
+      reason: "window_near_end",
+      pnlPct,
+      entryPrice: position.entryPrice,
+      exitPrice: btcRef,
+      remainingMins,
+      isGrid: position.isGrid,
+    });
     await closeAllPositions("BTC-USDT-SWAP");
     resetPosition();
     return;
@@ -435,6 +520,15 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
 
   if (elapsedMs >= MAX_HOLDING_MS) {
     log(`[EXIT] max_holding (${(elapsedMs / 60000).toFixed(1)}m) | pnl=${pnlPct.toFixed(2)}% | closing`);
+    logTradeEvent("TRADE", "position_exit", {
+      side: position.side,
+      reason: "max_holding",
+      pnlPct,
+      entryPrice: position.entryPrice,
+      exitPrice: btcRef,
+      holdMinutes: elapsedMs / 60000,
+      isGrid: position.isGrid,
+    });
     await closeAllPositions("BTC-USDT-SWAP");
     resetPosition();
     return;
@@ -445,6 +539,16 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
     : btcRef >= position.entryPrice * (1 + position.stopLossPct / 100);
   if (stopTriggered) {
     log(`[EXIT] stop_loss | pnl=${pnlPct.toFixed(2)}% | hit=${position.stopLossPct}% [${position.isContrarian ? "contrarian" : "main"}]`);
+    logTradeEvent("TRADE", "position_exit", {
+      side: position.side,
+      reason: "stop_loss",
+      pnlPct,
+      entryPrice: position.entryPrice,
+      exitPrice: btcRef,
+      stopLossPct: position.stopLossPct,
+      source: position.isContrarian ? "contrarian" : "main",
+      isGrid: position.isGrid,
+    });
     await closeAllPositions("BTC-USDT-SWAP");
     resetPosition();
     return;
@@ -454,6 +558,13 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
     position.breakEvenActivated = true;
     position.stopLossPct = 0;
     log(`[RISK] Break-even activated at ${pnlPct.toFixed(2)}% [${position.isContrarian ? "contrarian" : "main"}]`);
+    logTradeEvent("TRADE", "break_even_armed", {
+      side: position.side,
+      pnlPct,
+      breakEvenPct: position.breakEvenPct,
+      source: position.isContrarian ? "contrarian" : "main",
+      isGrid: position.isGrid,
+    });
   }
 
   if (position.isContrarian) {
@@ -463,6 +574,16 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
       (position.side === "short" && regime === "TREND_UP");
     if (shouldExit) {
       log(`[EXIT] regime_shift | pnl=${pnlPct.toFixed(2)}% | regime=${regime} | closing contrarian`);
+      logTradeEvent("TRADE", "position_exit", {
+        side: position.side,
+        reason: "regime_shift",
+        pnlPct,
+        entryPrice: position.entryPrice,
+        exitPrice: btcRef,
+        regime,
+        source: "contrarian",
+        isGrid: position.isGrid,
+      });
       await closeAllPositions("BTC-USDT-SWAP");
       resetPosition();
       return;
@@ -491,6 +612,13 @@ async function tryClosePositionNoSignal(): Promise<boolean> {
   if (position.isGrid) return false;
 
   log(`[TRADE] closeAllPositions — reason=${reason}`);
+  logTradeEvent("TRADE", "position_exit", {
+    side: position.side,
+    reason,
+    isGrid: position.isGrid,
+    remainingMins: remaining / 60,
+    holdMinutes: holdDurationMs / 60000,
+  });
   await closeAllPositions("BTC-USDT-SWAP");
   resetPosition();
   return true;
@@ -502,6 +630,12 @@ async function tryManageGridPosition(signal: StrategySignal, btcPrice: number, e
   const shouldExitGrid = !isChopLike(signal);
   if (shouldExitGrid) {
     log(`[GRID] Regime shifted to ${signal.regime} — closing grid inventory`);
+    logTradeEvent("GRID", "grid_exit", {
+      reason: "regime_shift",
+      regime: signal.regime,
+      btcPrice,
+      windowEnd: endTimestamp,
+    });
     await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", btcPrice, true);
     resetPosition();
     return true;
@@ -510,6 +644,12 @@ async function tryManageGridPosition(signal: StrategySignal, btcPrice: number, e
   const elapsedMs = Date.now() - (position.entryTime ?? 0);
   if (elapsedMs >= MAX_HOLDING_MS) {
     log(`[GRID] max_holding — closing grid inventory`);
+    logTradeEvent("GRID", "grid_exit", {
+      reason: "max_holding",
+      regime: signal.regime,
+      btcPrice,
+      elapsedMs,
+    });
     await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", btcPrice, true);
     resetPosition();
     return true;
@@ -518,6 +658,11 @@ async function tryManageGridPosition(signal: StrategySignal, btcPrice: number, e
   if (position.windowEndTimestamp !== endTimestamp) {
     position.windowEndTimestamp = endTimestamp;
     log(`[GRID] window_rollover — carrying inventory into next window`);
+    logTradeEvent("GRID", "window_rollover", {
+      btcPrice,
+      endTimestamp,
+      inventory: position.originalSize,
+    });
   }
 
   const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false);
@@ -608,6 +753,12 @@ async function main(): Promise<void> {
                 isGrid: true,
                 regimeSnapshot: signal.regime,
               };
+              logTradeEvent("GRID", "seed_position_registered", {
+                regime: signal.regime,
+                entryPrice: btcPrice,
+                windowEnd: endTimestamp,
+                inventory: CHOP_GRID_CONFIG.orderSize,
+              });
             }
           }
           await sleep(SIGNAL_INTERVAL_MS);
