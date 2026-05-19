@@ -62,6 +62,9 @@ const STEP_DOWN_LEVELS: { profitPct: number; closeFraction: number }[] = [
   { profitPct: 0.7, closeFraction: 0.25 }, // at +0.7%: close another 25%
 ];
 
+// Position sizing
+const MAX_POS_SIZE_PCT = parseFloat(process.env.MAX_POS_SIZE_PCT ?? "0.20"); // cap at 20% of balance per trade
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PositionState {
@@ -88,7 +91,7 @@ interface TradeDecision {
   reason: string;
 }
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// ─── State ───────────────────────────────────────────────────────────────────
 
 const FLAT_POSITION: PositionState = {
   side: null, entryPrice: null, entryTime: null, slug: null,
@@ -101,12 +104,64 @@ let position: PositionState = { ...FLAT_POSITION };
 let lastBtcPrice: number | null = null;
 let lastCandles: Candle[] = [];
 
+// Cached balance to avoid hammering OKX on every signal
+let cachedBalance: number | null = null;
+let lastBalanceTs: number = 0;
+const BALANCE_CACHE_MS = 30_000; // refresh every 30s
+
 function log(msg: string): void {
   console.error(`[${new Date().toISOString()}] ${msg}`);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ─── Balance helper ───────────────────────────────────────────────────────────
+
+async function fetchBalance(): Promise<number | null> {
+  if (cachedBalance !== null && Date.now() - lastBalanceTs < BALANCE_CACHE_MS) {
+    return cachedBalance;
+  }
+  try {
+    const balance = await getAccountBalance();
+    if (balance?.[0]) {
+      const usdtBal = (balance[0] as any).details?.find((d: any) => d.ccy === "USDT");
+      const availEq = parseFloat(usdtBal?.availEq ?? (balance[0] as any).totalEq ?? "0");
+      cachedBalance = availEq;
+      lastBalanceTs = Date.now();
+      return availEq;
+    }
+  } catch (_) { /* ignore */ }
+  return null;
+}
+
+// ─── Kelly sizing ─────────────────────────────────────────────────────────────
+
+/**
+ * Simple return-risk optimal position sizing.
+ *
+ * reward = expected price move in USD terms
+ * risk   = maximum adverse excursion in USD terms (stop-loss distance)
+ * kelly  = reward / risk  (capped at 1.0)
+ *
+ * Final size = min(Kelly fraction, MAX_POS_SIZE_PCT) × balance
+ *              expressed in contracts (1 contract = 0.01 BTC)
+ */
+function calcKellySize(
+  rewardUsd: number,   // expected profit if price moves in your direction
+  riskUsd: number,      // maximum loss if price moves against you (stop-loss dist)
+  balance: number,
+  btcPrice: number,
+): number {
+  if (riskUsd <= 0) return 0;
+
+  const rawKelly = Math.min(rewardUsd / riskUsd, 1.0);        // Kelly fraction
+  const cappedKelly = Math.min(rawKelly, MAX_POS_SIZE_PCT);    // apply 20% cap
+
+  const usdBudget = balance * cappedKelly;
+  const contracts = Math.max(1, Math.round(usdBudget / (btcPrice * CONTRACT_SIZE)));
+  return contracts;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -199,53 +254,50 @@ async function syncPosition(): Promise<void> {
     position = { ...FLAT_POSITION };
     return;
   }
+
   const pos = activePositions[0];
-  const side = pos.posSide === "long" ? "long"
-    : pos.posSide === "short" ? "short"
-    : (parseInt(pos.pos) > 0 ? "long" : "short");
-  const avgPx = parseFloat(pos.avgPx) || null;
+  const side = pos.posSide === "short" ? "short" : "long";
+  const avgPx = parseFloat(pos.avgPx);
+  const sz = parseFloat(pos.pos);
+
   if (position.side !== side || position.entryPrice !== avgPx) {
-    log(`[POS] ${side.toUpperCase()} | avgPx=${pos.avgPx} | sz=${pos.pos} | upl=${pos.upl} | liqPx=${pos.liqPx}`);
+    log(`[POS] Synced: ${side.toUpperCase()} | avgPx=${avgPx} | sz=${sz} | unrealized=${pos.upl}`);
     position.side = side;
     position.entryPrice = avgPx;
     position.entryTime = Date.now();
     position.orderId = null;
+    position.windowEndTimestamp = null;
+    position.originalSize = sz;
+    position.lastStepIndex = -1;
+    position.breakEvenActivated = false;
   }
 }
 
-// ─── Signal evaluation ────────────────────────────────────────────────────────
+// ─── Evaluate signal ─────────────────────────────────────────────────────────
 
-async function evaluateSignal(): Promise<{
-  signal: StrategySignal;
-  btcPrice: number;
-  upBid: number;
-  endTimestamp: number;
-} | null> {
-  const pollResult = await pollPolymarket("btc", WINDOW_DURATION_MINUTES);
-  if (!pollResult || pollResult.marketClosed) return null;
-
-  const { endTimestamp, upBid, downBid } = pollResult;
-  if (upBid === null || downBid === null) return null;
-
+async function evaluateSignal() {
   const btcPrice = await fetchBtcPrice();
-  if (btcPrice === null) return null;
+  if (!btcPrice) { log(`[WARN] No BTC price`); return null; }
   lastBtcPrice = btcPrice;
 
-  const barLimit = WINDOW_DURATION_MINUTES <= 15 ? "1m" : "5m";
-  const klines = await fetchOkxKlines(barLimit, 60).catch(() => []);
-  lastCandles = klines.map(okxToBinanceCandle);
+  const candles = await fetchOkxKlines("BTC-USDT-SWAP", "15m", 60);
+  if (candles.length > 0) {
+    lastCandles = candles.map(okxToBinanceCandle);
+  }
 
-  const kronosResult = await getKronosProb(lastCandles);
-  const kronosProb = kronosResult?.probUp ?? null;
+  const upBid = await pollPolymarket();
+  const kronosProb = await getKronosProb();
+  const kronosResult = kronosProb;
+
   if (kronosResult) {
     log(`[Kronos] prob_up=${kronosResult.probUp.toFixed(3)} delta=${kronosResult.deltaPercent.toFixed(4)}% latency=${kronosResult.latencyMs}ms`);
   }
 
-  const signal = scoreStrategy(lastCandles, upBid, endTimestamp, {
+  const signal = scoreStrategy(lastCandles, upBid, Date.now() + WINDOW_DURATION_MINUTES * 60 * 1000, {
     ...DEFAULT_SCORING_CONFIG,
   }, WINDOW_DURATION_MINUTES * 60, kronosProb);
 
-  return { signal, btcPrice, upBid, endTimestamp };
+  return { signal, btcPrice, upBid, endTimestamp: Date.now() + WINDOW_DURATION_MINUTES * 60 * 1000 };
 }
 
 // ─── Entry logic ──────────────────────────────────────────────────────────────
@@ -254,21 +306,26 @@ async function tryOpenPosition(decision: TradeDecision, signalEdge: number, endT
   // Entry timing guard: wait until enough of the window has elapsed
   const timeRatio = calcTimeRatio(endTimestamp, WINDOW_DURATION_MINUTES * 60);
   if (timeRatio < ENTRY_TIME_RATIO_MIN) {
-    // Only suppress log noise — main loop already logs signal
     return false;
   }
 
-  // Fee-spread gate (main signal only — contrarian uses PM deviation as quality filter)
+  const btcRef = lastBtcPrice ?? 76000;
+
+  // ── EV gate (main signal only) ─────────────────────────────────────────────
   if (decision.source === "main") {
-    const feeRoundTrip = (lastBtcPrice ?? 76000) * CONTRACT_SIZE * TAKER_FEE_RATE * 2;
+    const feeRoundTrip = btcRef * CONTRACT_SIZE * TAKER_FEE_RATE * 2;
+
     const last15 = lastCandles.slice(-15);
     const range15min = last15.length >= 5
       ? Math.max(...last15.map(c => c.high)) - Math.min(...last15.map(c => c.low))
-      : (lastBtcPrice ?? 76000) * 0.002;
+      : btcRef * 0.002;
+
+    // Fixed EV: directionalEdge × range × BTC_price × CONTRACT_SIZE = USD expected profit
     const directionalEdge = Math.abs(signalEdge);
-    const expectedProfit = directionalEdge * range15min * CONTRACT_SIZE;
+    const expectedProfit = directionalEdge * range15min * btcRef * CONTRACT_SIZE;
+
     if (expectedProfit < feeRoundTrip) {
-      log(`[SKIP] EV≈${expectedProfit.toFixed(4)} < fee_spread=${feeRoundTrip.toFixed(4)} | range=${range15min.toFixed(0)}`);
+      log(`[SKIP] EV≈${expectedProfit.toFixed(2)} < fee=${feeRoundTrip.toFixed(2)} | range=${range15min.toFixed(0)} | edge=${directionalEdge.toFixed(3)}`);
       return false;
     }
   }
@@ -283,15 +340,34 @@ async function tryOpenPosition(decision: TradeDecision, signalEdge: number, endT
     return false;
   }
 
-  const size = "1";
+  // ── Dynamic position sizing ────────────────────────────────────────────────
+  const balance = await fetchBalance();
+  const stopLossPct = decision.stopLossPct;
+
+  // reward: expected move = edge × range (in BTC terms) × price = USD
+  const last15 = lastCandles.slice(-15);
+  const range15min = last15.length >= 5
+    ? Math.max(...last15.map(c => c.high)) - Math.min(...last15.map(c => c.low))
+    : btcRef * 0.002;
+  const rewardUsd = Math.abs(signalEdge) * range15min * btcRef;
+
+  // risk: stop-loss distance × position size = USD loss per contract
+  const riskPerContract = stopLossPct / 100 * btcRef * CONTRACT_SIZE;
+
+  const size = balance !== null && balance > 0
+    ? calcKellySize(rewardUsd, riskPerContract, balance, btcRef)
+    : 1;
+
+  const sizeStr = String(Math.min(size, 100)); // hard ceiling at 100 contracts for safety
+
   let result = null;
 
   if (decision.direction === "up") {
-    log(`[TRADE] buyUp [${decision.source}] | ${decision.reason}`);
-    result = await buyUp("BTC-USDT-SWAP", size);
+    log(`[TRADE] buyUp [${decision.source}] | ${decision.reason} | size=${sizeStr} | bal=${balance !== null ? balance.toFixed(0) : "N/A"} USDT`);
+    result = await buyUp("BTC-USDT-SWAP", sizeStr);
   } else {
-    log(`[TRADE] sellDown [${decision.source}] | ${decision.reason}`);
-    result = await sellDown("BTC-USDT-SWAP", size);
+    log(`[TRADE] sellDown [${decision.source}] | ${decision.reason} | size=${sizeStr} | bal=${balance !== null ? balance.toFixed(0) : "N/A"} USDT`);
+    result = await sellDown("BTC-USDT-SWAP", sizeStr);
   }
 
   if (result?.sCode === "0") {
@@ -302,14 +378,14 @@ async function tryOpenPosition(decision: TradeDecision, signalEdge: number, endT
       slug: null,
       windowEndTimestamp: endTimestamp,
       orderId: result.ordId,
-      originalSize: 1,
+      originalSize: size,
       lastStepIndex: -1,
       stopLossPct: decision.stopLossPct,
       breakEvenPct: decision.breakEvenPct,
       breakEvenActivated: false,
       isContrarian: decision.source === "contrarian",
     };
-    log(`[TRADE] Opened ${position.side!.toUpperCase()} | ordId=${result.ordId} | BTC≈${lastBtcPrice} | stop=${decision.stopLossPct}% [${decision.source}]`);
+    log(`[TRADE] Opened ${position.side!.toUpperCase()} | ordId=${result.ordId} | BTC≈${lastBtcPrice} | size=${size} contracts | stop=${decision.stopLossPct}% [${decision.source}]`);
     return true;
   }
 
@@ -330,112 +406,78 @@ async function tryStepDownPosition(): Promise<void> {
 
   const nextStepIndex = position.lastStepIndex + 1;
   if (nextStepIndex >= STEP_DOWN_LEVELS.length) return;
+
   const nextStep = STEP_DOWN_LEVELS[nextStepIndex];
   if (floatingPnlPct < nextStep.profitPct) return;
 
-  const positions = await getPositions("BTC-USDT-SWAP");
-  const pos = positions[0];
-  if (!pos || parseInt(pos.pos) === 0) return;
+  const closeFrac = nextStep.closeFraction;
+  const closeSz = Math.max(1, Math.round(position.originalSize * closeFrac));
+  log(`[EXIT] Step-down ${(closeFrac * 100).toFixed(0)}% (${closeSz} contracts) at +${floatingPnlPct.toFixed(2)}% [${position.isContrarian ? "contrarian" : "main"}]`);
+  await closePositionPartially("BTC-USDT-SWAP", String(closeSz));
+  position.lastStepIndex = nextStepIndex;
+}
 
-  const currentSize = parseInt(pos.pos);
-  const toClose = Math.min(currentSize, Math.max(1, Math.floor((position.originalSize ?? currentSize) * nextStep.closeFraction)));
+// ─── Close logic ──────────────────────────────────────────────────────────────
 
-  if (!ENABLE_TRADING) {
-    log(`[SIM] Step-down #${nextStepIndex + 1}: close ${toClose}/${currentSize} @ +${floatingPnlPct.toFixed(3)}%`);
-    position.lastStepIndex = nextStepIndex;
+async function tryClosePosition(signal: StrategySignal): Promise<void> {
+  if (position.side === null || position.entryPrice === null || position.originalSize === null) return;
+
+  const btcRef = lastBtcPrice ?? 76000;
+  const elapsedMs = Date.now() - (position.entryTime ?? 0);
+  const pnlPct = position.side === "long"
+    ? (btcRef - position.entryPrice) / position.entryPrice * 100
+    : (position.entryPrice - btcRef) / position.entryPrice * 100;
+
+  // ── Time-based close ────────────────────────────────────────────────────────
+  const windowEndTs = position.windowEndTimestamp ?? 0;
+  const remainingMins = (windowEndTs - Date.now()) / 60000;
+  if (remainingMins <= CLOSE_BEFORE_MINS && position.side !== null) {
+    log(`[EXIT] window_near_end (${remainingMins.toFixed(1)}m left) | pnl=${pnlPct.toFixed(2)}% | closing`);
+    await closeAllPositions("BTC-USDT-SWAP");
+    position = { ...FLAT_POSITION };
     return;
   }
 
-  const closed = await closePositionPartially("BTC-USDT-SWAP", toClose.toString());
-  if (closed) {
-    log(`[TRADE] Step-down #${nextStepIndex + 1}: closed ${closed}/${currentSize} @ +${floatingPnlPct.toFixed(3)}%`);
-    position.lastStepIndex = nextStepIndex;
+  // ── Max holding close ───────────────────────────────────────────────────────
+  if (elapsedMs >= MAX_HOLDING_MS) {
+    log(`[EXIT] max_holding (${(elapsedMs / 60000).toFixed(1)}m) | pnl=${pnlPct.toFixed(2)}% | closing`);
+    await closeAllPositions("BTC-USDT-SWAP");
+    position = { ...FLAT_POSITION };
+    return;
+  }
 
-    const remaining = await getPositions("BTC-USDT-SWAP");
-    if (!remaining.length || parseInt(remaining[0].pos) === 0) {
-      const pnl = position.entryPrice && lastBtcPrice
-        ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice) * CONTRACT_SIZE
-        : 0;
-      log(`[TRADE] All closed | PnL≈${pnl.toFixed(4)} USD (BTC ${position.entryPrice}→${lastBtcPrice})`);
+  // ── Stop-loss ──────────────────────────────────────────────────────────────
+  const stopTriggered = position.side === "long"
+    ? btcRef <= position.entryPrice * (1 - position.stopLossPct / 100)
+    : btcRef >= position.entryPrice * (1 + position.stopLossPct / 100);
+
+  if (stopTriggered) {
+    log(`[EXIT] stop_loss | pnl=${pnlPct.toFixed(2)}% | hit=${position.stopLossPct}% [${position.isContrarian ? "contrarian" : "main"}]`);
+    await closeAllPositions("BTC-USDT-SWAP");
+    position = { ...FLAT_POSITION };
+    return;
+  }
+
+  // ── Break-even ──────────────────────────────────────────────────────────────
+  if (!position.breakEvenActivated && pnlPct >= position.breakEvenPct) {
+    position.breakEvenActivated = true;
+    position.stopLossPct = 0; // lock in profit
+    log(`[RISK] Break-even activated at ${pnlPct.toFixed(2)}% [${position.isContrarian ? "contrarian" : "main"}]`);
+  }
+
+  // ── Regime-aligned exit (contrarian only) ───────────────────────────────────
+  if (position.isContrarian) {
+    const regime = signal.regime;
+    const pm = signal.confidence; // upBid proxy
+    const shouldExit =
+      (position.side === "long" && regime === "TREND_DOWN") ||
+      (position.side === "short" && regime === "TREND_UP");
+    if (shouldExit) {
+      log(`[EXIT] regime_shift | pnl=${pnlPct.toFixed(2)}% | regime=${regime} | closing contrarian`);
+      await closeAllPositions("BTC-USDT-SWAP");
       position = { ...FLAT_POSITION };
     }
   }
-}
-
-// ─── Exit logic ───────────────────────────────────────────────────────────────
-
-async function tryClosePosition(signal: StrategySignal): Promise<boolean> {
-  if (position.side === null) return false;
-
-  const nowSec         = Date.now() / 1000;
-  const remaining      = (position.windowEndTimestamp ?? 0) - nowSec;
-  const holdDurationMs = position.entryTime ? Date.now() - position.entryTime : 0;
-  const closeBeforeSec = CLOSE_BEFORE_MINS * 60;
-
-  const floatingPnlPct = position.entryPrice && lastBtcPrice
-    ? (position.side === "long"
-        ? (lastBtcPrice - position.entryPrice) / position.entryPrice * 100
-        : (position.entryPrice - lastBtcPrice) / position.entryPrice * 100)
-    : 0;
-  const inProfit = floatingPnlPct >= FLOATING_PROFIT_THRESHOLD_PCT;
-
-  // ── Break-even stop ────────────────────────────────────────────────────────
-  if (!position.breakEvenActivated && floatingPnlPct >= position.breakEvenPct) {
-    position.breakEvenActivated = true;
-    position.stopLossPct = 0;
-    log(`[RISK] Break-even armed @ entry=${position.entryPrice} (profit=${floatingPnlPct.toFixed(3)}%) [${position.isContrarian ? "contrarian" : "main"}]`);
-  }
-
-  // ── Exit conditions ────────────────────────────────────────────────────────
-  const stopLossHit = floatingPnlPct <= -position.stopLossPct;
-
-  const regimeAligned = (position.side === "long"  && signal.regime === "TREND_UP")
-                     || (position.side === "short" && signal.regime === "TREND_DOWN");
-  const regimeShifted = (position.side === "long"  && signal.regime === "TREND_DOWN")
-                     || (position.side === "short" && signal.regime === "TREND_UP");
-
-  // Signal reversal: model explicitly calls the opposite direction
-  const signalReversed = (position.side === "long"  && signal.direction === "down")
-                      || (position.side === "short" && signal.direction === "up");
-
-  // Cross-window: close at expiry only if signal has gone flat.
-  // If signal continues same direction, hold through the new window to avoid
-  // double round-trip fees.
-  const windowExpired = remaining <= 0 || remaining < closeBeforeSec;
-  const signalContinues = (position.side === "long"  && signal.direction === "up")
-                       || (position.side === "short" && signal.direction === "down");
-  const windowExpiredNoSignal = windowExpired && !signalContinues;
-
-  const maxHoldingExceeded = holdDurationMs > MAX_HOLDING_MS;
-
-  // Let winners ride: skip max_holding exit if in profit and regime still aligned
-  if (maxHoldingExceeded && inProfit && regimeAligned) return false;
-
-  if (!stopLossHit && !windowExpiredNoSignal && !regimeShifted && !signalReversed && !maxHoldingExceeded) {
-    return false;
-  }
-
-  const exitReason = stopLossHit          ? `stop_loss(${floatingPnlPct.toFixed(3)}%)`
-    : signalReversed        ? `signal_reversed(${signal.direction})`
-    : windowExpiredNoSignal ? "window_expired(no_signal)"
-    : regimeShifted         ? "regime_shift"
-    : "max_holding";
-
-  if (!ENABLE_TRADING) {
-    log(`[SIM] Would close: ${exitReason} | remaining=${remaining.toFixed(0)}s | hold=${(holdDurationMs/60000).toFixed(1)}m | profit=${floatingPnlPct.toFixed(3)}%`);
-    return false;
-  }
-
-  log(`[TRADE] closeAllPositions — ${exitReason} | hold=${(holdDurationMs/60000).toFixed(1)}m | profit=${floatingPnlPct.toFixed(3)}% [${position.isContrarian ? "contrarian" : "main"}]`);
-  await closeAllPositions("BTC-USDT-SWAP");
-
-  const pnl = position.entryPrice && lastBtcPrice
-    ? (position.side === "long" ? lastBtcPrice - position.entryPrice : position.entryPrice - lastBtcPrice) * CONTRACT_SIZE
-    : 0;
-  log(`[TRADE] Closed ${position.side?.toUpperCase()} | PnL≈${pnl.toFixed(4)} USD (BTC ${position.entryPrice}→${lastBtcPrice})`);
-
-  position = { ...FLAT_POSITION };
-  return true;
 }
 
 // ─── Main loop ────────────────────────────────────────────────────────────────
@@ -445,16 +487,15 @@ async function main(): Promise<void> {
   log(`Window: ${WINDOW_DURATION_MINUTES}min | Interval: ${SIGNAL_INTERVAL_MS}ms | Trading: ${ENABLE_TRADING}`);
   log(`Risk main: stop=${STOP_LOSS_PCT}% | break_even=${BREAK_EVEN_PCT}%`);
   log(`Risk contrarian: stop=${CONTRARIAN_STOP_LOSS_PCT}% | break_even=${CONTRARIAN_BREAK_EVEN_PCT}% | PM_H=${PM_CONTRARIAN_HIGH} | PM_L=${PM_CONTRARIAN_LOW} | vol_threshold=${EXTREME_VOL_THRESHOLD}`);
+  log(`Sizing: MAX_POS_SIZE_PCT=${(MAX_POS_SIZE_PCT * 100).toFixed(0)}% | Kelly formula`);
 
   await syncPosition();
 
-  const balance = await getAccountBalance();
-  if (balance?.[0]) {
-    const usdtBal = (balance[0] as any).details?.find((d: any) => d.ccy === "USDT");
-    const availEq = usdtBal?.availEq ?? (balance[0] as any).totalEq ?? "N/A";
-    log(`Balance: availEq=${availEq} USDT`);
+  const balance = await fetchBalance();
+  if (balance !== null) {
+    log(`Balance: availEq=${balance.toFixed(0)} USDT`);
   } else {
-    log(`WARNING: Could not fetch OKX balance`);
+    log(`WARNING: Could not fetch OKX balance — using size=1`);
   }
 
   const kronosReady = await isKronosReady();
