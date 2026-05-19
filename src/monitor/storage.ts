@@ -49,6 +49,9 @@ function initSchema(db: Database.Database): void {
       slug TEXT NOT NULL,
       window_start_timestamp INTEGER NOT NULL,
       window_end_timestamp INTEGER NOT NULL,
+      regime TEXT,
+      regime_score REAL,
+      regime_reason TEXT,
       signal_up_price REAL,
       signal_down_price REAL,
       signal_up_time INTEGER,
@@ -70,18 +73,21 @@ function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_window_coin ON window_summaries(coin);
   `);
 
-  // Migrate: add any columns that exist in the schema but not in the live table
-  const migrateColumns: Array<[string, string]> = [
-    ["net_profit_if_up",   "REAL"],
-    ["net_profit_if_down", "REAL"],
-    ["spread_cost",        "REAL"],
-    ["fee_cost",           "REAL"],
-  ];
-  const existing = new Set(
-    (db.prepare("PRAGMA table_info(window_summaries)").all() as any[]).map((r: any) => r.name)
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(window_summaries)").all() as Array<{ name: string }>)
+      .map((row) => row.name)
   );
+  const migrateColumns: Array<[string, string]> = [
+    ["regime", "TEXT"],
+    ["regime_score", "REAL"],
+    ["regime_reason", "TEXT"],
+    ["net_profit_if_up", "REAL"],
+    ["net_profit_if_down", "REAL"],
+    ["spread_cost", "REAL"],
+    ["fee_cost", "REAL"],
+  ];
   for (const [col, type] of migrateColumns) {
-    if (!existing.has(col)) {
+    if (!columns.has(col)) {
       db.exec(`ALTER TABLE window_summaries ADD COLUMN ${col} ${type}`);
     }
   }
@@ -112,18 +118,22 @@ export function insertWindowSummary(summary: Omit<WindowSummary, "id">): number 
   const stmt = db.prepare(`
     INSERT INTO window_summaries (
       coin, slug, window_start_timestamp, window_end_timestamp,
+      regime, regime_score, regime_reason,
       signal_up_price, signal_down_price, signal_up_time, signal_down_time,
       btc_entry_price, btc_exit_price, btc_return,
       up_won, profit_if_up, profit_if_down,
       net_profit_if_up, net_profit_if_down, spread_cost, fee_cost,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     summary.coin,
     summary.slug,
     summary.windowStartTimestamp,
     summary.windowEndTimestamp,
+    summary.regime,
+    summary.regimeScore,
+    summary.regimeReason,
     summary.signalUpPrice,
     summary.signalDownPrice,
     summary.signalUpTime,
@@ -177,6 +187,9 @@ export function getWindowSummaries(limit: number = 500): WindowSummary[] {
     signalDownPrice: row.signal_down_price,
     signalUpTime: row.signal_up_time,
     signalDownTime: row.signal_down_time,
+    regime: row.regime,
+    regimeScore: row.regime_score,
+    regimeReason: row.regime_reason,
     btcEntryPrice: row.btc_entry_price,
     btcExitPrice: row.btc_exit_price,
     windowStartTimestamp: row.window_start_timestamp,

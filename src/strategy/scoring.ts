@@ -11,6 +11,7 @@ import {
   calcMacd,
   calcVwapSlope,
   calcHeikenAshi,
+  calcBollingerWidthPct,
   priceVsVwap,
 } from "./ta.js";
 import { detectRegime } from "./regime.js";
@@ -29,8 +30,11 @@ export interface ScoringConfig {
   // Stage thresholds (remaining time ratios)
   earlyTimeRatio: number;      // EARLY: > this
   lateTimeRatio: number;       // LATE: < this
-  // Kronos blend weight (0 = TA only, 1 = Kronos only)
   kronosWeight: number;
+  regimeMode: "adaptive" | "trend_only" | "chop_only";
+  minRegimeScore: number;
+  trendWidthMinPct: number;
+  chopWidthMaxPct: number;
 }
 
 /** Default scoring config */
@@ -44,7 +48,11 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
   exitTimeRatio: 0.85,
   earlyTimeRatio: 0.7,
   lateTimeRatio: 0.2,
-  kronosWeight: 0.4,  // 40% Kronos, 60% TA — conservative start
+  kronosWeight: 0.4,
+  regimeMode: "adaptive",
+  minRegimeScore: 0.6,
+  trendWidthMinPct: 0.04,
+  chopWidthMaxPct: 0.035,
 };
 
 /** Score a direction signal (1-3 per sub-signal) */
@@ -159,7 +167,7 @@ export function scoreStrategy(
   kronosProb: number | null = null,
 ): StrategySignal {
   const { score, maxScore, breakdown } = scoreDirection(candles);
-  const taProb = score / maxScore;
+  const taProb = maxScore > 0 ? score / maxScore : 0.5;
 
   // Blend TA + Kronos if available
   // Dynamic Kronos weight: scale down when Kronos has no view (prob ≈ 0.5)
@@ -191,18 +199,42 @@ export function scoreStrategy(
   // Direction
   let direction: "up" | "down" | "none" = "none";
   let reason = "";
+  let profile: "TREND_FOLLOW" | "MEAN_REVERT" | "FILTERED" = "FILTERED";
 
   const reasons: string[] = [];
+  const widthPct = calcBollingerWidthPct(candles.slice(-20), Math.min(20, candles.length));
 
   // Entry conditions
   const timeRatio = calcTimeRatio(windowEndTimestamp, windowDurSeconds);
-  if (timeRatio > config.entryTimeRatioMin && upPriceRatio >= config.entryPriceRatioMin && upPriceRatio <= config.entryPriceRatioMax) {
+  const trendAllowed = regime === "TREND_UP" || regime === "TREND_DOWN";
+  const chopAllowed = regime === "CHOP" || regime === "RANGE";
+  const regimeStrongEnough = regimeInfo.score >= config.minRegimeScore;
+  const modeAllowsTrend = config.regimeMode !== "chop_only";
+  const modeAllowsChop = config.regimeMode !== "trend_only";
+
+  if (modeAllowsTrend && trendAllowed && regimeStrongEnough && widthPct >= config.trendWidthMinPct && timeRatio > config.entryTimeRatioMin && upPriceRatio >= config.entryPriceRatioMin && upPriceRatio <= config.entryPriceRatioMax) {
     if (edge > config.entryEdgeThreshold && decayProb > config.entryProbMin) {
       direction = "up";
+      profile = "TREND_FOLLOW";
       reasons.push(`edge=${edge.toFixed(3)}`);
     } else if (-edge > config.entryEdgeThreshold && (1 - decayProb) > config.entryProbMin) {
       direction = "down";
+      profile = "TREND_FOLLOW";
       reasons.push(`edge=${(-edge).toFixed(3)}`);
+    }
+  } else if (modeAllowsChop && chopAllowed && regimeStrongEnough && widthPct <= config.chopWidthMaxPct && timeRatio > config.entryTimeRatioMin) {
+    const fairPrice = 0.5;
+    const mispricing = upBid - fairPrice;
+    if (upPriceRatio >= config.entryPriceRatioMin) {
+      if (mispricing >= config.entryEdgeThreshold) {
+        direction = "down";
+        profile = "MEAN_REVERT";
+        reasons.push(`chop_revert=down edge=${mispricing.toFixed(3)}`);
+      } else if (mispricing <= -config.entryEdgeThreshold) {
+        direction = "up";
+        profile = "MEAN_REVERT";
+        reasons.push(`chop_revert=up edge=${Math.abs(mispricing).toFixed(3)}`);
+      }
     }
   }
 
@@ -211,6 +243,9 @@ export function scoreStrategy(
   const kronosTag = kronosProb !== null ? `|kr=${kronosProb.toFixed(3)}` : "|kr=N/A";
   if (direction !== "none") {
     reasons.push(`regime=${regime}`);
+    reasons.push(`regimeScore=${regimeInfo.score.toFixed(2)}`);
+    reasons.push(`regimeReason=${regimeInfo.reason}`);
+    reasons.push(`regimeMode=${config.regimeMode}`);
     reasons.push(`stage=${stage}`);
     reasons.push(`upPriceRatio=${upPriceRatio.toFixed(3)}`);
     reasons.push(`prob=${decayProb.toFixed(3)}(ta=${taProb.toFixed(3)}${kronosTag})`);
@@ -228,5 +263,9 @@ export function scoreStrategy(
     reason,
     regime,
     stage,
+    regimeScore: regimeInfo.score,
+    regimeReason: regimeInfo.reason,
+    profile,
+    regimeSnapshot: regime,
   };
 }

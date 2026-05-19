@@ -88,6 +88,8 @@ async function collectCoin(coin: Coin): Promise<void> {
   ]);
 
   const candles = okxRaw.map(okxToBinanceCandle);
+  const upPriceRatio = upBid !== null ? Math.abs(upBid - 0.5) / 0.5 : 0;
+  const regimeInfo = detectRegime(candles);
 
   // Record tick
   const tick: Tick = {
@@ -132,6 +134,9 @@ async function collectCoin(coin: Coin): Promise<void> {
         slug: prevSlug,
         windowStartTimestamp: endTimestamp - WINDOW_DURATION_MINUTES * 60,
         windowEndTimestamp: endTimestamp,
+        regime: regimeInfo.regime,
+        regimeScore: regimeInfo.score,
+        regimeReason: regimeInfo.reason,
         signalUpPrice: signalUp[prevSlug]?.price ?? null,
         signalDownPrice: signalDown[prevSlug]?.price ?? null,
         signalUpTime: signalUp[prevSlug]?.time ?? null,
@@ -167,10 +172,6 @@ async function collectCoin(coin: Coin): Promise<void> {
     windowStartPrice[slug] = btcPrice;
   }
 
-  // --- TA + Regime (Phase 2) ---
-  const upPriceRatio = upBid !== null ? Math.abs(upBid - 0.5) / 0.5 : 0;
-  const regimeInfo = detectRegime(candles);
-
   // Record signals (first time price exceeds threshold)
   if (upBid !== null && upBid > SIGNAL_THRESHOLD && !signalUp[slug]) {
     signalUp[slug] = { price: upBid, time: Date.now() };
@@ -188,7 +189,8 @@ async function collectCoin(coin: Coin): Promise<void> {
     const dir = upBid > 0.5 ? "🟢UP" : upBid < 0.5 ? "🔴DOWN" : "⚪FLAT";
     const pct = ((upBid - 0.5) * 200).toFixed(1);
     const btcStr = btcPrice ? ` BTC:$${btcPrice.toLocaleString()}` : "";
-    log(`${minuteStr} | ${dir} ${pct}% | UP:$${upBid.toFixed(3)} DN:$${downBid.toFixed(3)}${btcStr} [${regimeInfo.regime}] ratio:${upPriceRatio.toFixed(3)} | ${slug}`);
+    const upPriceRatio = Math.abs(upBid - 0.5) / 0.5;
+    log(`${minuteStr} | ${dir} ${pct}% | UP:$${upBid.toFixed(3)} DN:$${downBid.toFixed(3)}${btcStr} [${regimeInfo.regime} ${regimeInfo.score.toFixed(2)}] ratio:${upPriceRatio.toFixed(3)} | ${slug}`);
     log(`[${coin}] Stats: ${stats.tickCount} ticks, ${stats.windowCount} windows`);
   }
 }

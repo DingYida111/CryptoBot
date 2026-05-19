@@ -134,6 +134,19 @@ OKX_USE_PROXY=false
 DATA_COLLECT_INTERVAL_MS=5000   # 采集间隔（ms）
 TARGET_MARKETS=btc              # 目标市场（btc/eth/sol/xrp）
 WINDOW_DURATION_MINUTES=15      # 窗口时长（分钟）
+
+# 交易配置
+SIGNAL_INTERVAL_MS=10000
+MAX_POSITION_SIZE=1
+CLOSE_BEFORE_MINS=0.5
+MAX_HOLDING_MS=1500000
+FLOATING_PROFIT_THRESHOLD_PCT=0.5
+
+# Regime 配置
+REGIME_MODE=adaptive        # adaptive | trend_only | chop_only
+MIN_REGIME_SCORE=0.6
+TREND_WIDTH_MIN_PCT=0.04
+CHOP_WIDTH_MAX_PCT=0.035
 ```
 
 ## 快速开始

@@ -54,6 +54,9 @@ def load_data(db_path: str) -> pd.DataFrame:
             window_end_timestamp,
             signal_up_price,
             signal_down_price,
+            regime,
+            regime_score,
+            regime_reason,
             btc_entry_price,
             btc_exit_price,
             btc_return,
@@ -82,6 +85,7 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
 
     df["up_won"] = df["up_won"].astype(float)  # keep NaN-safe
     df["btc_return_pct"] = df["btc_return"] * 100
+    df["regime"] = df["regime"].fillna("UNKNOWN")
 
     # Signal presence flags
     df["has_up_signal"]   = df["signal_up_price"].notna() & (df["signal_up_price"] > SIGNAL_THRESHOLD)
@@ -236,6 +240,33 @@ def time_of_day_analysis(df: pd.DataFrame) -> None:
                    tablefmt="github", showindex=False))
 
 
+def regime_analysis(df: pd.DataFrame) -> None:
+    print("\n" + "=" * 60)
+    print("REGIME BREAKDOWN")
+    print("=" * 60)
+
+    tbl = (df.groupby("regime")
+             .agg(
+                 count=("regime", "count"),
+                 up_win_rate=("up_won", "mean"),
+                 avg_btc_return=("btc_return_pct", "mean"),
+                 avg_net_profit=("directed_net_profit", "mean"),
+             )
+             .reset_index())
+    if tbl.empty:
+        print("  No regime data.")
+        return
+    tbl["up_win_rate"] = (tbl["up_win_rate"] * 100).round(1)
+    tbl["avg_btc_return"] = tbl["avg_btc_return"].round(3)
+    tbl["avg_net_profit"] = tbl["avg_net_profit"].round(2)
+    print(tabulate(
+        tbl[["regime", "count", "up_win_rate", "avg_btc_return", "avg_net_profit"]],
+        headers=["Regime", "N", "UP Win%", "Avg BTC Ret%", "Avg Net P&L"],
+        tablefmt="github",
+        showindex=False,
+    ))
+
+
 def friction_breakdown(df: pd.DataFrame) -> None:
     print("\n" + "=" * 60)
     print("FRICTION COST BREAKDOWN")
@@ -278,6 +309,7 @@ def main():
     signal_vs_nosignal(df)
     correlation_analysis(df)
     time_of_day_analysis(df)
+    regime_analysis(df)
     friction_breakdown(df)
 
     print("\n" + "=" * 60)

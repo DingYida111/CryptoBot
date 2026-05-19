@@ -78,6 +78,35 @@ export function calcVwapSlope(candles: Candle[], lookback: number = 10): number 
   return (vwapRecent - vwapOlder) / vwapOlder;
 }
 
+/** Average True Range */
+export function calcAtr(candles: Candle[], period: number = 14): number {
+  if (candles.length < period + 1) return 0;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const curr = candles[i];
+    const prev = candles[i - 1];
+    const tr = Math.max(
+      curr.high - curr.low,
+      Math.abs(curr.high - prev.close),
+      Math.abs(curr.low - prev.close),
+    );
+    trs.push(tr);
+  }
+  const slice = trs.slice(-period);
+  return slice.reduce((sum, val) => sum + val, 0) / slice.length;
+}
+
+/** Bollinger band width as a percentage of mid-band */
+export function calcBollingerWidthPct(candles: Candle[], period: number = 20, mult: number = 2): number {
+  if (candles.length < period) return 0;
+  const closes = candles.slice(-period).map((c) => c.close);
+  const mean = closes.reduce((sum, val) => sum + val, 0) / closes.length;
+  const variance = closes.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / closes.length;
+  const std = Math.sqrt(variance);
+  if (mean === 0) return 0;
+  return ((mean + mult * std) - (mean - mult * std)) / mean;
+}
+
 /** Heiken Ashi candle — smoothed trend representation */
 export function calcHeikenAshi(candles: Candle[]): {
   haClose: number;

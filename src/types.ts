@@ -33,6 +33,9 @@ export interface WindowSummary {
   slug: string;
   windowStartTimestamp: number;
   windowEndTimestamp: number;
+  regime: MarketRegime | null;
+  regimeScore: number | null;
+  regimeReason: string | null;
   // Entry signals (when signal first triggered)
   signalUpPrice: number | null;
   signalDownPrice: number | null;
@@ -73,6 +76,10 @@ export interface StrategySignal {
   reason: string;
   regime: MarketRegime;
   stage: TradeStage;
+  regimeScore?: number;
+  regimeReason?: string;
+  profile?: "TREND_FOLLOW" | "MEAN_REVERT" | "FILTERED";
+  regimeSnapshot?: MarketRegime;
 }
 
 export type MarketRegime = "TREND_UP" | "TREND_DOWN" | "RANGE" | "CHOP";
