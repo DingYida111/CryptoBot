@@ -77,5 +77,41 @@ module.exports = {
       kill_timeout: 10000,
       listen_timeout: 10000,
     },
+    {
+      name: "cryptobot-supervisor",
+      script: "node_modules/.bin/tsx",
+      args: "src/runtime/run_strategy_supervisor.ts",
+      cwd: __dirname,
+
+      watch: false,
+      autorestart: true,
+      restart_delay: 5000,
+      max_restarts: 20,
+      min_uptime: "10s",
+
+      // Secrets are loaded from .env by dotenv at runtime, not injected by PM2.
+      env: {
+        NODE_ENV: "production",
+        STRATEGY_SUPERVISOR_ENABLED: "true",
+        STRATEGY_SUPERVISOR_WATCH: "true",
+        STRATEGY_SUPERVISOR_INTERVAL_MS: "60000",
+        STRATEGY_SUPERVISOR_AUTO_START: "false",
+        STRATEGY_SUPERVISOR_ALLOW_BENCHMARK_FALLBACK: "true",
+      },
+      env_development: {
+        NODE_ENV: "development",
+      },
+
+      out_file: "logs/supervisor-pm2-out.log",
+      error_file: "logs/supervisor-pm2-error.log",
+      merge_logs: true,
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+      max_size: "50M",
+      retain: 10,
+
+      max_memory_restart: "512M",
+      kill_timeout: 10000,
+      listen_timeout: 10000,
+    },
   ],
 };

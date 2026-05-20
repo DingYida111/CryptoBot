@@ -9,6 +9,7 @@ export interface OkxInstrumentMeta {
   tickSz: number;
   lotSz: number;
   minSz: number;
+  ctVal: number;
 }
 
 let instrumentMetaCache: { at: number; meta: OkxInstrumentMeta | null } | null = null;
@@ -55,8 +56,9 @@ export async function fetchBtcSwapMeta(): Promise<OkxInstrumentMeta | null> {
       tickSz: parseFloat(item.tickSz),
       lotSz: parseFloat(item.lotSz),
       minSz: parseFloat(item.minSz),
+      ctVal: parseFloat(item.ctVal),
     };
-    if (![meta.tickSz, meta.lotSz, meta.minSz].every((v) => Number.isFinite(v) && v > 0)) return null;
+    if (![meta.tickSz, meta.lotSz, meta.minSz, meta.ctVal].every((v) => Number.isFinite(v) && v > 0)) return null;
 
     instrumentMetaCache = { at: Date.now(), meta };
     return meta;

@@ -33,7 +33,7 @@ async function sign(
   return hmac.digest("base64");
 }
 
-async function okxRequest<T = any>(
+export async function okxPrivateRequest<T = any>(
   method: "GET" | "POST" | "DELETE",
   path: string,
   body: string = "",
@@ -97,7 +97,7 @@ export interface AccountBalance {
 
 export async function getAccountBalance(): Promise<AccountBalance[] | null> {
   try {
-    const data = await okxRequest<{ code: string; data: AccountBalance[] }>(
+    const data = await okxPrivateRequest<{ code: string; data: AccountBalance[] }>(
       "GET", "/api/v5/account/balance", "", true);
     if (data.code === "0" && data.data) return data.data;
     console.error("getAccountBalance error:", data);
@@ -112,7 +112,7 @@ export interface Position {
 
 export async function getPositions(instId: string = "BTC-USDT-SWAP"): Promise<Position[]> {
   try {
-    const data = await okxRequest<{ code: string; data: Position[] }>(
+    const data = await okxPrivateRequest<{ code: string; data: Position[] }>(
       "GET", `/api/v5/account/positions?instId=${instId}`, "", true);
     if (data.code === "0") return data.data ?? [];
     console.error("getPositions error:", data); return [];
@@ -135,7 +135,7 @@ export interface OrderResult { ordId: string; clOrdId: string; sCode: string; sM
 export async function placeOrder(req: OrderRequest): Promise<OrderResult | null> {
   try {
     const body = JSON.stringify(req);
-    const data = await okxRequest<{ code: string; data: OrderResult[] }>(
+    const data = await okxPrivateRequest<{ code: string; data: OrderResult[] }>(
       "POST", "/api/v5/trade/order", body, true);
     if (data.code === "0" && data.data?.[0]) {
       const r = data.data[0];
@@ -242,7 +242,7 @@ export async function closePositionPartially(instId = "BTC-USDT-SWAP", sz: strin
 
 export async function getPendingOrders(instId = "BTC-USDT-SWAP") {
   try {
-    const data = await okxRequest<{ code: string; data: any[] }>(
+    const data = await okxPrivateRequest<{ code: string; data: any[] }>(
       "GET", `/api/v5/trade/orders-pending?instId=${instId}`, "", true);
     if (data.code === "0") return data.data ?? [];
     return [];
@@ -252,7 +252,7 @@ export async function getPendingOrders(instId = "BTC-USDT-SWAP") {
 export async function cancelOrder(instId: string, ordId: string) {
   try {
     const body = JSON.stringify({ instId, ordId });
-    const data = await okxRequest<{ code: string; data?: Array<{ ordId?: string; sCode?: string; sMsg?: string }> }>(
+    const data = await okxPrivateRequest<{ code: string; data?: Array<{ ordId?: string; sCode?: string; sMsg?: string }> }>(
       "POST", "/api/v5/trade/cancel-order", body, true);
     logTradeEvent("OKX", "cancel_order_ack", {
       instId,
@@ -278,7 +278,7 @@ export async function cancelPendingOrders(instId: string, ordIds: string[]): Pro
     const batch = ordIds.slice(i, i + CANCEL_BATCH_SIZE).map((ordId) => ({ instId, ordId }));
     try {
       const body = JSON.stringify(batch);
-      const data = await okxRequest<{
+      const data = await okxPrivateRequest<{
         code: string;
         data?: Array<{ ordId?: string; sCode?: string; sMsg?: string }>;
       }>("POST", "/api/v5/trade/cancel-batch-orders", body, true);
@@ -312,7 +312,7 @@ export interface FilledOrder {
 
 export async function getRecentFills(instId = "BTC-USDT-SWAP", limit = 10) {
   try {
-    const data = await okxRequest<{ code: string; data: FilledOrder[] }>(
+    const data = await okxPrivateRequest<{ code: string; data: FilledOrder[] }>(
       "GET", `/api/v5/trade/fills?instId=${instId}&limit=${limit}`, "", true);
     if (data.code === "0") return data.data ?? [];
     return [];

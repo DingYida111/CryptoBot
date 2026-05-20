@@ -1,0 +1,82 @@
+import { config as dotenvConfig } from "dotenv";
+import { BenchmarkEnvSchema, loadManagedStrategyInstances, StrategySupervisorEnvSchema } from "./supervisor_config.js";
+import { createStrategySupervisor } from "./strategy_supervisor.js";
+
+dotenvConfig();
+
+const benchmarkEnv = BenchmarkEnvSchema.parse(process.env);
+const supervisorEnv = StrategySupervisorEnvSchema.parse(process.env);
+const instances = loadManagedStrategyInstances(supervisorEnv, benchmarkEnv);
+const supervisor = createStrategySupervisor(instances, {
+  defaultIntervalMs: supervisorEnv.STRATEGY_SUPERVISOR_INTERVAL_MS,
+  defaultAutoStart: supervisorEnv.STRATEGY_SUPERVISOR_AUTO_START,
+});
+
+function log(message: string, fields: Record<string, unknown> = {}): void {
+  const suffix = Object.keys(fields).length > 0 ? ` ${JSON.stringify(fields)}` : "";
+  console.error(`[${new Date().toISOString()}] [STRATEGY_SUPERVISOR] ${message}${suffix}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runOnce(): Promise<void> {
+  if (!supervisorEnv.STRATEGY_SUPERVISOR_ENABLED) {
+    log("supervisor disabled");
+    return;
+  }
+
+  if (instances.length === 0) {
+    log("no managed strategy instances configured");
+    return;
+  }
+
+  const results = await supervisor.runOnce();
+  for (const result of results) {
+    const fields: Record<string, unknown> = {
+      instanceId: result.instanceId,
+      type: result.type,
+      instrument: result.instrument,
+      state: result.state,
+      status: result.status,
+    };
+    if (result.algoId) fields.algoId = result.algoId;
+    if (result.totalPnl !== null && result.totalPnl !== undefined) fields.totalPnl = result.totalPnl;
+    if (result.status === "synced") {
+      fields.subOrders = result.subOrders;
+      fields.positions = result.positions;
+    }
+    if (result.error) fields.error = result.error;
+    log("instance sync result", fields);
+  }
+}
+
+async function main(): Promise<void> {
+  if (!supervisorEnv.STRATEGY_SUPERVISOR_WATCH) {
+    await runOnce();
+    return;
+  }
+
+  log("watch loop started", {
+    intervalMs: supervisorEnv.STRATEGY_SUPERVISOR_INTERVAL_MS,
+  });
+
+  while (true) {
+    try {
+      await runOnce();
+    } catch (error) {
+      log("watch iteration failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    await sleep(supervisorEnv.STRATEGY_SUPERVISOR_INTERVAL_MS);
+  }
+}
+
+main().catch((error) => {
+  log("supervisor failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  process.exit(1);
+});

@@ -122,6 +122,8 @@ interface PendingGridOrder {
 }
 
 const INST_ID = "BTC-USDT-SWAP";
+const DEFAULT_CONTRACT_VALUE = 0.01;
+const ESTIMATED_TAKER_FEE_RATE = 0.0005;
 let snapshot: ChopGridSnapshot = { ...FLAT_SNAPSHOT };
 let openLots: PersistedOpenLot[] = [];
 let stats: ChopGridStats = {
@@ -160,6 +162,58 @@ function calcMinSpacingPct(): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function contractValueFromMeta(meta: { ctVal?: number } | null | undefined): number {
+  return Number.isFinite(meta?.ctVal) && (meta?.ctVal ?? 0) > 0 ? (meta?.ctVal as number) : DEFAULT_CONTRACT_VALUE;
+}
+
+function contractsToBaseQty(contracts: number, contractValue: number): number {
+  return contracts * contractValue;
+}
+
+function grossPnlForContracts(entryPx: number, exitPx: number, contracts: number, contractValue: number): number {
+  return (exitPx - entryPx) * contractsToBaseQty(contracts, contractValue);
+}
+
+function estimateTakerExitFee(exitPx: number, contracts: number, contractValue: number): number {
+  return Math.abs(exitPx) * contractsToBaseQty(contracts, contractValue) * ESTIMATED_TAKER_FEE_RATE;
+}
+
+function totalOpenLotContracts(): number {
+  return openLots.reduce((sum, lot) => sum + lot.sz, 0);
+}
+
+function ensureTrackedInventory(entryPrice: number | null, inventory: number, reason: string): void {
+  if (!(inventory > 0)) {
+    openLots = [];
+    return;
+  }
+
+  const tracked = totalOpenLotContracts();
+  if (tracked <= 1e-9) {
+    if (entryPrice !== null && Number.isFinite(entryPrice)) {
+      openLots = [{ px: entryPrice, sz: inventory, fee: 0 }];
+      logTradeEvent("GRID", "inventory_backfilled", {
+        entryPrice,
+        inventory,
+        reason,
+      });
+    }
+    return;
+  }
+
+  if (tracked + 1e-9 < inventory && entryPrice !== null && Number.isFinite(entryPrice)) {
+    const missing = inventory - tracked;
+    openLots.push({ px: entryPrice, sz: missing, fee: 0 });
+    logTradeEvent("GRID", "inventory_topup", {
+      entryPrice,
+      inventory,
+      tracked,
+      addedContracts: missing,
+      reason,
+    });
+  }
 }
 
 function maxBuyLayersAllowed(config: ChopGridConfig): number {
@@ -493,7 +547,7 @@ function diffAuditTotals(before: ReturnType<typeof currentAuditTotals>) {
 }
 
 function recomputeStatsFromState(): void {
-  stats.avgFeeRatio = stats.roundTripCount > 0 ? stats.fee / Math.max(stats.grossPnl, 1e-9) : null;
+  stats.avgFeeRatio = stats.roundTripCount > 0 ? stats.feeRatioTotal / stats.roundTripCount : null;
 }
 
 async function cancelAllGridOrders(instId: string): Promise<void> {
@@ -550,6 +604,18 @@ function pendingGridOrderKeys(pending: PendingGridOrder[], metaTickSz: number): 
     .sort();
 }
 
+function hasBidirectionalLongGridOrders(pending: PendingGridOrder[]): boolean {
+  let hasBuy = false;
+  let hasSell = false;
+  for (const order of pending) {
+    if (order.posSide !== "long") continue;
+    if (order.side === "buy") hasBuy = true;
+    if (order.side === "sell") hasSell = true;
+    if (hasBuy && hasSell) return true;
+  }
+  return false;
+}
+
 function shouldRefreshGridOrders(
   pending: PendingGridOrder[],
   config: ChopGridConfig,
@@ -569,9 +635,12 @@ function shouldRefreshGridOrders(
   return { refresh: false, reason: "aligned" };
 }
 
-async function syncGridPosition(instId: string): Promise<void> {
+async function syncGridPosition(
+  instId: string,
+  options?: { adoptIfNeeded?: boolean; pending?: PendingGridOrder[] }
+): Promise<void> {
   const positions = await getPositions(instId);
-  const active = positions.find((p) => parseInt(p.pos) !== 0);
+  const active = positions.find((p) => parseInt(p.pos) !== 0 && p.posSide !== "short");
   if (!active) {
     if (snapshot.active) reset();
     return;
@@ -579,6 +648,12 @@ async function syncGridPosition(instId: string): Promise<void> {
 
   const entryPrice = parseFloat(active.avgPx);
   const inventory = Math.abs(parseInt(active.pos));
+  const pending = options?.pending ?? [];
+  const adoptFromExchange =
+    Boolean(options?.adoptIfNeeded) &&
+    !snapshot.active &&
+    active.posSide !== "short" &&
+    hasBidirectionalLongGridOrders(pending);
   const prevActive = snapshot.active;
   const prevEntryPrice = snapshot.entryPrice;
   const prevInventory = snapshot.inventory;
@@ -587,22 +662,29 @@ async function syncGridPosition(instId: string): Promise<void> {
     ...snapshot,
     active: true,
     side: "long",
+    anchorPrice:
+      adoptFromExchange && Number.isFinite(entryPrice)
+        ? entryPrice
+        : snapshot.anchorPrice,
     entryPrice: Number.isFinite(entryPrice) ? entryPrice : snapshot.entryPrice,
     inventory,
-    reason: "synced",
+    pendingOrderCount: pending.length > 0 ? pending.length : snapshot.pendingOrderCount,
+    reason: adoptFromExchange ? "adopted_from_exchange" : "synced",
   };
+  ensureTrackedInventory(snapshot.entryPrice, inventory, snapshot.reason);
   if (
     !prevActive ||
     prevEntryPrice !== snapshot.entryPrice ||
     prevInventory !== snapshot.inventory ||
     prevReason !== snapshot.reason
   ) {
-    logTradeEvent("GRID", "position_synced", {
+    logTradeEvent("GRID", adoptFromExchange ? "position_adopted" : "position_synced", {
       instId,
       side: "long",
       entryPrice: snapshot.entryPrice,
       inventory: snapshot.inventory,
       reason: snapshot.reason,
+      pendingOrderCount: snapshot.pendingOrderCount,
     });
   }
   persistState();
@@ -646,7 +728,124 @@ async function ensureGridOrders(instId: string, config: ChopGridConfig, price: n
   persistState();
 }
 
-async function auditRecentGridFills(instId: string): Promise<void> {
+function bookRealizedGridExit(
+  sellPx: number,
+  matchedQty: number,
+  weightedBuyPx: number,
+  grossPnl: number,
+  buyFee: number,
+  sellFee: number,
+  fillTime: number,
+  reason: string
+): void {
+  if (matchedQty <= 0) return;
+  const totalFee = buyFee + sellFee;
+  const netPnl = grossPnl - totalFee;
+  const feeToProfit = grossPnl > 0 ? totalFee / grossPnl : Infinity;
+  const buyVwap = weightedBuyPx / matchedQty;
+  stats.roundTripCount += 1;
+  stats.grossPnl += grossPnl;
+  stats.fee += totalFee;
+  stats.netPnl += netPnl;
+  stats.feeRatioTotal += Number.isFinite(feeToProfit) ? feeToProfit : 0;
+  if (netPnl >= 0) {
+    stats.winCount += 1;
+  } else {
+    stats.lossCount += 1;
+  }
+  recomputeStatsFromState();
+  persistRoundTrip({
+    fillTime,
+    matchedQty,
+    buyVwap,
+    sellPx,
+    grossPnl,
+    fee: totalFee,
+    netPnl,
+    feeRatio: Number.isFinite(feeToProfit) ? feeToProfit : null,
+  });
+  persistState();
+  logGrid(
+    `roundtrip qty=${matchedQty.toFixed(4)} gross=${grossPnl.toFixed(4)} fee=${totalFee.toFixed(4)} net=${netPnl.toFixed(4)} fee_ratio=${Number.isFinite(feeToProfit) ? feeToProfit.toFixed(3) : "inf"} sell_px=${sellPx.toFixed(1)} avg_fee_ratio=${stats.avgFeeRatio === null ? "n/a" : stats.avgFeeRatio.toFixed(3)} wins=${stats.winCount} losses=${stats.lossCount} reason=${reason}`
+  );
+  logTradeEvent("GRID", "fill_close", {
+    instId: INST_ID,
+    fillTime,
+    matchedQty,
+    buyVwap,
+    sellPx,
+    grossPnl,
+    fee: totalFee,
+    netPnl,
+    feeRatio: Number.isFinite(feeToProfit) ? feeToProfit : null,
+    remainingOpenLots: openLots.length,
+    reason,
+  });
+}
+
+function settleRemainingOpenLots(
+  exitPx: number,
+  fillTime: number,
+  contractValue: number,
+  reason: "force_exit" | "breakout_stop"
+): { matchedQty: number; grossPnl: number; totalFee: number; netPnl: number } | null {
+  if (openLots.length === 0) return null;
+
+  let matchedQty = 0;
+  let grossPnl = 0;
+  let accumulatedBuyFee = 0;
+  let weightedBuyPx = 0;
+  for (const lot of openLots) {
+    if (!(lot.sz > 0)) continue;
+    matchedQty += lot.sz;
+    grossPnl += grossPnlForContracts(lot.px, exitPx, lot.sz, contractValue);
+    accumulatedBuyFee += lot.fee;
+    weightedBuyPx += lot.px * lot.sz;
+  }
+
+  if (matchedQty <= 0) {
+    openLots = [];
+    persistState();
+    return null;
+  }
+
+  const sellFee = estimateTakerExitFee(exitPx, matchedQty, contractValue);
+  openLots = [];
+  bookRealizedGridExit(
+    exitPx,
+    matchedQty,
+    weightedBuyPx,
+    grossPnl,
+    accumulatedBuyFee,
+    sellFee,
+    fillTime,
+    `${reason}_synthetic`
+  );
+  logTradeEvent("GRID", "exit_settled_fallback", {
+    reason,
+    fillTime,
+    exitPx,
+    matchedQty,
+    grossPnl,
+    buyFee: accumulatedBuyFee,
+    sellFee,
+    netPnl: grossPnl - accumulatedBuyFee - sellFee,
+  });
+  return {
+    matchedQty,
+    grossPnl,
+    totalFee: accumulatedBuyFee + sellFee,
+    netPnl: grossPnl - accumulatedBuyFee - sellFee,
+  };
+}
+
+async function getOpenLongInventory(instId: string): Promise<number> {
+  const positions = await getPositions(instId);
+  const activeLong = positions.find((position) => parseInt(position.pos) !== 0 && position.posSide !== "short");
+  return activeLong ? Math.abs(parseInt(activeLong.pos)) : 0;
+}
+
+async function auditRecentGridFills(instId: string, contractValue: number): Promise<void> {
   const fills = await getRecentFills(instId, 50);
   const ordered = [...fills].reverse();
   const cursor = getFillCursor();
@@ -662,7 +861,13 @@ async function auditRecentGridFills(instId: string): Promise<void> {
   for (const fill of ordered) {
     const key = fillKey(fill);
     const fillTime = Number(fill.fillTime ?? 0);
-    if (cursor && fillTime <= cursor.last_fill_time) continue;
+    if (
+      cursor &&
+      (fillTime < cursor.last_fill_time ||
+        (fillTime === cursor.last_fill_time && key <= (cursor.last_fill_key ?? "")))
+    ) {
+      continue;
+    }
     if (!recordSeenFill(fill, key)) continue;
 
     const px = parseFloat(fill.fillPx);
@@ -701,7 +906,7 @@ async function auditRecentGridFills(instId: string): Promise<void> {
     while (remaining > 0 && openLots.length > 0) {
       const lot = openLots[0];
       const matched = Math.min(remaining, lot.sz);
-      grossPnl += (px - lot.px) * matched;
+      grossPnl += grossPnlForContracts(lot.px, px, matched, contractValue);
       accumulatedBuyFee += lot.fee * (matched / lot.sz);
       weightedBuyPx += lot.px * matched;
       matchedQty += matched;
@@ -714,52 +919,20 @@ async function auditRecentGridFills(instId: string): Promise<void> {
 
     if (matchedQty <= 0) continue;
 
-    const sellFee = fee;
-    const totalFee = accumulatedBuyFee + sellFee;
-    const netPnl = grossPnl - totalFee;
-    const feeToProfit = grossPnl > 0 ? totalFee / grossPnl : Infinity;
-    const buyVwap = matchedQty > 0 ? weightedBuyPx / matchedQty : px;
-    stats.roundTripCount += 1;
-    stats.grossPnl += grossPnl;
-    stats.fee += totalFee;
-    stats.netPnl += netPnl;
-    stats.feeRatioTotal += Number.isFinite(feeToProfit) ? feeToProfit : 0;
-    if (netPnl >= 0) {
-      stats.winCount += 1;
-    } else {
-      stats.lossCount += 1;
-    }
-    stats.avgFeeRatio = stats.roundTripCount > 0 ? stats.feeRatioTotal / stats.roundTripCount : null;
-    persistRoundTrip({
-      fillTime: Number(fill.fillTime ?? 0),
+    bookRealizedGridExit(
+      px,
       matchedQty,
-      buyVwap,
-      sellPx: px,
+      weightedBuyPx,
       grossPnl,
-      fee: totalFee,
-      netPnl,
-      feeRatio: Number.isFinite(feeToProfit) ? feeToProfit : null,
-    });
-    persistState();
+      accumulatedBuyFee,
+      fee,
+      Number(fill.fillTime ?? 0),
+      "fill"
+    );
     if (fillTime > maxFillTime || (fillTime === maxFillTime && key > (maxFillKey ?? ""))) {
       maxFillTime = fillTime;
       maxFillKey = key;
     }
-    logGrid(
-      `roundtrip qty=${matchedQty.toFixed(4)} gross=${grossPnl.toFixed(4)} fee=${totalFee.toFixed(4)} net=${netPnl.toFixed(4)} fee_ratio=${Number.isFinite(feeToProfit) ? feeToProfit.toFixed(3) : "inf"} sell_px=${px.toFixed(1)} avg_fee_ratio=${stats.avgFeeRatio === null ? "n/a" : stats.avgFeeRatio.toFixed(3)} wins=${stats.winCount} losses=${stats.lossCount}`
-    );
-    logTradeEvent("GRID", "fill_close", {
-      instId,
-      fillTime,
-      matchedQty,
-      buyVwap,
-      sellPx: px,
-      grossPnl,
-      fee: totalFee,
-      netPnl,
-      feeRatio: Number.isFinite(feeToProfit) ? feeToProfit : null,
-      remainingOpenLots: openLots.length,
-    });
   }
   if (maxFillTime > 0) {
     setFillCursor(maxFillTime, maxFillKey);
@@ -778,8 +951,9 @@ export async function maybeRunChopGrid(
   if (!meta || !price) {
     return { active: false, reason: "missing_market_meta_or_price", openedSeed: false };
   }
+  const contractValue = contractValueFromMeta(meta);
 
-  await auditRecentGridFills(instId);
+  await auditRecentGridFills(instId, contractValue);
   await syncGridPosition(instId);
 
   if (forceExit) {
@@ -787,11 +961,15 @@ export async function maybeRunChopGrid(
     const snapshotBefore = { ...snapshot };
     const openLotsBefore = openLots.length;
     await sleep(250);
-    await auditRecentGridFills(instId);
+    await auditRecentGridFills(instId, contractValue);
     await cancelAllGridOrders(instId);
     await closeAllPositions(instId);
     await sleep(250);
-    await auditRecentGridFills(instId);
+    await auditRecentGridFills(instId, contractValue);
+    const remainingInventory = await getOpenLongInventory(instId);
+    if (remainingInventory <= 0 && openLots.length > 0) {
+      settleRemainingOpenLots(price, Date.now(), contractValue, "force_exit");
+    }
     const delta = diffAuditTotals(auditStart);
     persistExitAudit({
       exit_time: Date.now(),
@@ -851,11 +1029,15 @@ export async function maybeRunChopGrid(
     const snapshotBefore = { ...snapshot };
     const openLotsBefore = openLots.length;
     await sleep(250);
-    await auditRecentGridFills(instId);
+    await auditRecentGridFills(instId, contractValue);
     await cancelAllGridOrders(instId);
     await closeAllPositions(instId);
     await sleep(250);
-    await auditRecentGridFills(instId);
+    await auditRecentGridFills(instId, contractValue);
+    const remainingInventory = await getOpenLongInventory(instId);
+    if (remainingInventory <= 0 && openLots.length > 0) {
+      settleRemainingOpenLots(price, Date.now(), contractValue, "breakout_stop");
+    }
     const delta = diffAuditTotals(auditStart);
     persistExitAudit({
       exit_time: Date.now(),
@@ -920,4 +1102,11 @@ export async function maybeRunChopGrid(
     return { active: true, reason: "cooldown", openedSeed: false };
   }
   return { active: true, reason: snapshot.reason, openedSeed: false };
+}
+
+export async function primeChopGridPosition(instId: string): Promise<boolean> {
+  getDbReady();
+  const pending = await getPendingOrders(instId) as PendingGridOrder[];
+  await syncGridPosition(instId, { adoptIfNeeded: true, pending });
+  return snapshot.active && snapshot.side === "long";
 }

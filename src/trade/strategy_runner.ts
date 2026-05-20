@@ -15,7 +15,7 @@ import {
   sellDown,
   getAccountBalance,
 } from "./okx_trade.js";
-import { getChopGridSnapshot, getChopGridStats, maybeRunChopGrid } from "./chop_grid.js";
+import { getChopGridSnapshot, getChopGridStats, maybeRunChopGrid, primeChopGridPosition } from "./chop_grid.js";
 import { logTradeEvent } from "./trade_logger.js";
 import { scoreStrategy, DEFAULT_SCORING_CONFIG } from "../strategy/scoring.js";
 import { getKronosProb, isKronosReady } from "../strategy/kronos.js";
@@ -217,6 +217,7 @@ function makeTradeDecision(signal: StrategySignal, upBid: number, candles: Candl
 }
 
 async function syncPosition(): Promise<void> {
+  await primeChopGridPosition("BTC-USDT-SWAP");
   const positions = await getPositions("BTC-USDT-SWAP");
   const activePositions = positions.filter((p) => parseInt(p.pos) !== 0);
   if (!activePositions.length) {

@@ -71,6 +71,73 @@ function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_window_slug ON window_summaries(slug);
     CREATE INDEX IF NOT EXISTS idx_window_coin ON window_summaries(coin);
+
+    CREATE TABLE IF NOT EXISTS managed_strategy_runs (
+      instance_id TEXT PRIMARY KEY,
+      strategy_type TEXT NOT NULL,
+      backend TEXT NOT NULL,
+      venue TEXT NOT NULL,
+      inst_id TEXT,
+      algo_id TEXT,
+      state TEXT,
+      config_json TEXT NOT NULL,
+      latest_details_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_managed_strategy_runs_type ON managed_strategy_runs(strategy_type);
+    CREATE INDEX IF NOT EXISTS idx_managed_strategy_runs_algo ON managed_strategy_runs(algo_id);
+
+    CREATE TABLE IF NOT EXISTS managed_strategy_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      instance_id TEXT NOT NULL,
+      strategy_type TEXT NOT NULL,
+      backend TEXT NOT NULL,
+      venue TEXT NOT NULL,
+      inst_id TEXT,
+      algo_id TEXT,
+      state TEXT,
+      total_pnl REAL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_managed_strategy_snapshots_instance
+      ON managed_strategy_snapshots(instance_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS managed_strategy_sub_orders (
+      instance_id TEXT NOT NULL,
+      algo_id TEXT NOT NULL,
+      ord_id TEXT NOT NULL,
+      strategy_type TEXT NOT NULL,
+      side TEXT,
+      pos_side TEXT,
+      state TEXT,
+      px REAL,
+      sz REAL,
+      avg_px REAL,
+      fill_sz REAL,
+      raw_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (instance_id, ord_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_managed_strategy_sub_orders_algo
+      ON managed_strategy_sub_orders(algo_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS managed_strategy_positions (
+      instance_id TEXT NOT NULL,
+      algo_id TEXT NOT NULL,
+      strategy_type TEXT NOT NULL,
+      pos_side TEXT NOT NULL,
+      pos REAL,
+      avg_px REAL,
+      upl REAL,
+      raw_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (instance_id, algo_id, pos_side)
+    );
   `);
 
   const columns = new Set(
@@ -91,6 +158,61 @@ function initSchema(db: Database.Database): void {
       db.exec(`ALTER TABLE window_summaries ADD COLUMN ${col} ${type}`);
     }
   }
+}
+
+export interface ManagedStrategyRunRecord {
+  instanceId: string;
+  strategyType: string;
+  backend: string;
+  venue: string;
+  instId?: string | null;
+  algoId?: string | null;
+  state?: string | null;
+  configJson: string;
+  latestDetailsJson?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ManagedStrategySnapshotRecord {
+  instanceId: string;
+  strategyType: string;
+  backend: string;
+  venue: string;
+  instId?: string | null;
+  algoId?: string | null;
+  state?: string | null;
+  totalPnl?: number | null;
+  rawJson: string;
+  createdAt: number;
+}
+
+export interface ManagedStrategySubOrderRecord {
+  instanceId: string;
+  algoId: string;
+  ordId: string;
+  strategyType: string;
+  side?: string | null;
+  posSide?: string | null;
+  state?: string | null;
+  px?: number | null;
+  sz?: number | null;
+  avgPx?: number | null;
+  fillSz?: number | null;
+  rawJson: string;
+  updatedAt: number;
+}
+
+export interface ManagedStrategyPositionRecord {
+  instanceId: string;
+  algoId: string;
+  strategyType: string;
+  posSide: string;
+  pos?: number | null;
+  avgPx?: number | null;
+  upl?: number | null;
+  rawJson: string;
+  updatedAt: number;
 }
 
 export function insertTick(tick: Tick): void {
@@ -216,6 +338,133 @@ export function closeDb(): void {
     _db.close();
     _db = null;
   }
+}
+
+export function upsertManagedStrategyRun(record: ManagedStrategyRunRecord): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO managed_strategy_runs (
+      instance_id, strategy_type, backend, venue, inst_id, algo_id, state,
+      config_json, latest_details_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(instance_id) DO UPDATE SET
+      strategy_type = excluded.strategy_type,
+      backend = excluded.backend,
+      venue = excluded.venue,
+      inst_id = excluded.inst_id,
+      algo_id = excluded.algo_id,
+      state = excluded.state,
+      config_json = excluded.config_json,
+      latest_details_json = excluded.latest_details_json,
+      updated_at = excluded.updated_at
+  `).run(
+    record.instanceId,
+    record.strategyType,
+    record.backend,
+    record.venue,
+    record.instId ?? null,
+    record.algoId ?? null,
+    record.state ?? null,
+    record.configJson,
+    record.latestDetailsJson ?? null,
+    record.createdAt,
+    record.updatedAt
+  );
+}
+
+export function insertManagedStrategySnapshot(record: ManagedStrategySnapshotRecord): number {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO managed_strategy_snapshots (
+      instance_id, strategy_type, backend, venue, inst_id, algo_id, state,
+      total_pnl, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.instanceId,
+    record.strategyType,
+    record.backend,
+    record.venue,
+    record.instId ?? null,
+    record.algoId ?? null,
+    record.state ?? null,
+    record.totalPnl ?? null,
+    record.rawJson,
+    record.createdAt
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function replaceManagedStrategySubOrders(
+  instanceId: string,
+  algoId: string,
+  records: ManagedStrategySubOrderRecord[]
+): void {
+  const db = getDb();
+  const removeStmt = db.prepare(`
+    DELETE FROM managed_strategy_sub_orders
+    WHERE instance_id = ? AND algo_id = ?
+  `);
+  const insertStmt = db.prepare(`
+    INSERT INTO managed_strategy_sub_orders (
+      instance_id, algo_id, ord_id, strategy_type, side, pos_side, state,
+      px, sz, avg_px, fill_sz, raw_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const tx = db.transaction(() => {
+    removeStmt.run(instanceId, algoId);
+    for (const record of records) {
+      insertStmt.run(
+        record.instanceId,
+        record.algoId,
+        record.ordId,
+        record.strategyType,
+        record.side ?? null,
+        record.posSide ?? null,
+        record.state ?? null,
+        record.px ?? null,
+        record.sz ?? null,
+        record.avgPx ?? null,
+        record.fillSz ?? null,
+        record.rawJson,
+        record.updatedAt
+      );
+    }
+  });
+  tx();
+}
+
+export function replaceManagedStrategyPositions(
+  instanceId: string,
+  algoId: string,
+  records: ManagedStrategyPositionRecord[]
+): void {
+  const db = getDb();
+  const removeStmt = db.prepare(`
+    DELETE FROM managed_strategy_positions
+    WHERE instance_id = ? AND algo_id = ?
+  `);
+  const insertStmt = db.prepare(`
+    INSERT INTO managed_strategy_positions (
+      instance_id, algo_id, strategy_type, pos_side, pos, avg_px, upl, raw_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const tx = db.transaction(() => {
+    removeStmt.run(instanceId, algoId);
+    for (const record of records) {
+      insertStmt.run(
+        record.instanceId,
+        record.algoId,
+        record.strategyType,
+        record.posSide,
+        record.pos ?? null,
+        record.avgPx ?? null,
+        record.upl ?? null,
+        record.rawJson,
+        record.updatedAt
+      );
+    }
+  });
+  tx();
 }
 
 function rowToTick(row: any): Tick {

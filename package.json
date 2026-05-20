@@ -8,6 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "collect": "tsx src/monitor/run.ts",
+    "benchmark:okx-grid": "tsx src/runtime/run_okx_grid_benchmark.ts",
+    "supervisor:strategies": "tsx src/runtime/run_strategy_supervisor.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },

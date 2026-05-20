@@ -2,6 +2,22 @@
 
 > Polymarket 信号驱动 OKX BTC 合约交易机器人
 
+## 当前能力概览
+
+目前项目已经不只是一个简单的信号脚本，而是拆成了三层：
+
+- `monitor`：采集 Polymarket / OKX 数据并写入 SQLite
+- `trade`：本地策略执行，当前包含 regime + directional trading + CHOP grid
+- `runtime`：统一管理本地策略与 OKX 托管策略，支持 benchmark、快照持久化、后续扩展 martingale / arbitrage
+
+当前已经接入的托管策略能力：
+
+- OKX `contract grid` 创建 / 查询 / 停止
+- 持久化 `managed_strategy_runs`
+- 持久化 `managed_strategy_snapshots`
+- 持久化 `managed_strategy_sub_orders`
+- 持久化 `managed_strategy_positions`
+
 ## 核心思路
 
 Polymarket 是基于区块链的预测市场，其 BTC 15分钟"涨跌"市场（BID: "BTC 15分钟后上涨还是下跌？"）反映了交易者在短期内对 BTC 价格方向的群体预期。
@@ -89,17 +105,81 @@ CryptoBot/
 │   │   ├── okx.ts           # OKX REST 价格采集
 │   │   ├── storage.ts       # SQLite 存储
 │   │   └── run.ts           # 采集入口
-│   ├── strategy/             # Phase 2 策略模块（待开发）
-│   ├── execution/            # Phase 3 执行模块（待开发）
-│   ├── utils/
-│   │   ├── logger.ts
-│   │   └── time.ts
+│   ├── strategy/            # 信号评分、Kronos、regime 判断
+│   ├── trade/               # 本地下单、仓位管理、CHOP grid、OKX bot API
+│   ├── runtime/             # 托管策略 registry / controller / supervisor
 │   └── types.ts
 ├── data/                     # SQLite 数据库目录
 ├── logs/                     # 日志目录
-└── scripts/
-    └── analysis/            # 数据分析脚本
+├── ecosystem.config.js       # PM2 配置
+└── STRATEGY_RUNTIME_ARCHITECTURE.md
 ```
+
+## 运行时架构
+
+这部分是现在项目最重要的结构变化。
+
+### 1. 本地策略执行层
+
+入口：
+
+- `src/trade/strategy_runner.ts`
+
+职责：
+
+- 读取 Polymarket + BTC 行情
+- 判断当前 regime
+- 执行 directional trade 或 CHOP grid
+- 同步 OKX 持仓
+- 记录详细成交 / 平仓 / 风控日志
+
+### 2. 托管策略适配层
+
+关键文件：
+
+- `src/trade/okx_bots.ts`
+- `src/runtime/okx_contract_grid_controller.ts`
+
+职责：
+
+- 适配 OKX Strategy Trading API
+- 将 OKX 原生返回结构转成统一 snapshot
+- 让托管策略也能像本地策略一样被统一管理
+
+### 3. 统一控制平面
+
+关键文件：
+
+- `src/runtime/managed_strategies.ts`
+- `src/runtime/strategy_registry.ts`
+- `src/runtime/strategy_supervisor.ts`
+- `src/runtime/supervisor_config.ts`
+- `src/runtime/persistence.ts`
+
+职责：
+
+- 注册策略类型与参数元数据
+- 为每种策略生成对应 controller
+- 轮询多个 strategy instance
+- 持久化 run / snapshot / sub-order / position
+- 为 benchmark、dashboard、Agent 分析提供统一数据面
+
+### 4. 可扩展设计
+
+新增一个策略族时，原则上只需要三步：
+
+1. 在 `managed_strategies.ts` 新增 definition
+2. 实现一个 controller，暴露 `start / sync / stop`
+3. 在 `strategy_registry.ts` 注册 factory
+
+这使得后续接入：
+
+- OKX martingale
+- 本地 spread arbitrage
+- funding basis
+- 交易所其他托管策略
+
+都不需要重构主流程。
 
 ## 技术栈
 
@@ -117,6 +197,13 @@ CryptoBot/
 cp .env.example .env
 # 编辑 .env 填入必要的 API key 和配置
 ```
+
+安全原则：
+
+- 不要把 API key 写进 Git
+- 不要把 API key 直接写进 PM2 `env`
+- 所有密钥统一从 `.env` 由 `dotenv` 在运行时读取
+- 开源仓库默认只允许提交 `.env.example`
 
 关键配置项：
 
@@ -147,6 +234,26 @@ REGIME_MODE=adaptive        # adaptive | trend_only | chop_only
 MIN_REGIME_SCORE=0.6
 TREND_WIDTH_MIN_PCT=0.04
 CHOP_WIDTH_MAX_PCT=0.035
+
+# Managed strategy supervisor
+STRATEGY_SUPERVISOR_ENABLED=true
+STRATEGY_SUPERVISOR_WATCH=true
+STRATEGY_SUPERVISOR_INTERVAL_MS=60000
+STRATEGY_SUPERVISOR_AUTO_START=false
+STRATEGY_SUPERVISOR_ALLOW_BENCHMARK_FALLBACK=true
+
+# OKX benchmark fallback instance
+OKX_BENCHMARK_ENABLED=true
+OKX_BENCHMARK_AUTO_CREATE=false
+OKX_BENCHMARK_WATCH=false
+OKX_BENCHMARK_INST_ID=BTC-USDT-SWAP
+OKX_BENCHMARK_DIRECTION=neutral
+OKX_BENCHMARK_MARGIN=200
+OKX_BENCHMARK_LEVERAGE=2
+OKX_BENCHMARK_GRID_NUM=7
+OKX_BENCHMARK_RUN_TYPE=1
+OKX_BENCHMARK_MIN_RATIO=0.97
+OKX_BENCHMARK_MAX_RATIO=1.03
 ```
 
 ## 快速开始
@@ -155,12 +262,91 @@ CHOP_WIDTH_MAX_PCT=0.035
 # 安装依赖
 npm install
 
-# 启动数据采集（Phase 1）
+# 启动数据采集
 npm run collect
 
-# 数据分析（需要先跑至少 100 个窗口，约 25 小时）
-node scripts/analysis/correlate.ts
+# 启动本地策略执行
+node dist/trade/strategy_runner.js
+
+# 单次同步 OKX grid benchmark
+npm run benchmark:okx-grid
+
+# 启动统一 supervisor
+npm run supervisor:strategies
 ```
+
+如果使用 PM2：
+
+```bash
+pm2 start ecosystem.config.js
+pm2 logs cryptobot-strat
+pm2 logs cryptobot-supervisor
+```
+
+## Agent / 开发者阅读顺序
+
+如果你是开发者或内部 Agent，建议按下面顺序阅读：
+
+1. `README.md`
+2. `STRATEGY_RUNTIME_ARCHITECTURE.md`
+3. `src/trade/strategy_runner.ts`
+4. `src/trade/chop_grid.ts`
+5. `src/trade/okx_bots.ts`
+6. `src/runtime/`
+7. `src/monitor/storage.ts`
+
+这样能最快理解：
+
+- 信号从哪里来
+- 本地策略怎么下单
+- OKX 托管策略怎么接入
+- snapshot 是怎么落库的
+- 以后该在哪一层扩展新策略
+
+## Managed Strategy 配置
+
+`StrategySupervisor` 支持通过 `MANAGED_STRATEGY_INSTANCES_JSON` 一次加载多个实例。
+
+示例：
+
+```json
+[
+  {
+    "instanceId": "okx_grid_btc_demo",
+    "type": "okx_contract_grid",
+    "instrument": "BTC-USDT-SWAP",
+    "enabled": true,
+    "autoStart": false,
+    "syncIntervalMs": 60000,
+    "parameters": {
+      "algoId": "",
+      "direction": "neutral",
+      "margin": 200,
+      "leverage": 2,
+      "gridNum": 7,
+      "runType": 1,
+      "minPriceRatio": 0.97,
+      "maxPriceRatio": 1.03
+    },
+    "metadata": {
+      "role": "benchmark"
+    }
+  }
+]
+```
+
+若未提供 `MANAGED_STRATEGY_INSTANCES_JSON`，supervisor 会回退到 `OKX_BENCHMARK_*` 配置，便于低成本快速上线对比实验。
+
+## 数据库中的托管策略表
+
+新增的几张表用于 benchmark 和复盘：
+
+- `managed_strategy_runs`
+- `managed_strategy_snapshots`
+- `managed_strategy_sub_orders`
+- `managed_strategy_positions`
+
+这些表的目标是让分析建立在结构化数据上，而不是建立在日志文本上。
 
 ## 数据验证标准
 
