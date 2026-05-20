@@ -18,6 +18,11 @@
 - 持久化 `managed_strategy_sub_orders`
 - 持久化 `managed_strategy_positions`
 
+基础设计文档：
+
+- `STRATEGY_RUNTIME_ARCHITECTURE.md` — 当前托管策略运行时设计
+- `PORTFOLIO_ALGEBRA_FOUNDATION.md` — 下一阶段统一 `instrument / security / strategy / residual` 数学底座
+
 ## 核心思路
 
 Polymarket 是基于区块链的预测市场，其 BTC 15分钟"涨跌"市场（BID: "BTC 15分钟后上涨还是下跌？"）反映了交易者在短期内对 BTC 价格方向的群体预期。
@@ -112,7 +117,8 @@ CryptoBot/
 ├── data/                     # SQLite 数据库目录
 ├── logs/                     # 日志目录
 ├── ecosystem.config.js       # PM2 配置
-└── STRATEGY_RUNTIME_ARCHITECTURE.md
+├── STRATEGY_RUNTIME_ARCHITECTURE.md
+└── PORTFOLIO_ALGEBRA_FOUNDATION.md
 ```
 
 ## 运行时架构
@@ -289,11 +295,12 @@ pm2 logs cryptobot-supervisor
 
 1. `README.md`
 2. `STRATEGY_RUNTIME_ARCHITECTURE.md`
-3. `src/trade/strategy_runner.ts`
-4. `src/trade/chop_grid.ts`
-5. `src/trade/okx_bots.ts`
-6. `src/runtime/`
-7. `src/monitor/storage.ts`
+3. `PORTFOLIO_ALGEBRA_FOUNDATION.md`
+4. `src/trade/strategy_runner.ts`
+5. `src/trade/chop_grid.ts`
+6. `src/trade/okx_bots.ts`
+7. `src/runtime/`
+8. `src/monitor/storage.ts`
 
 这样能最快理解：
 
