@@ -553,16 +553,6 @@ Funding arbitrage 示例：
 
 若数据验证未通过，项目将停留 Phase 1，不进入策略开发。
 
-## 参考项目
-
-本项目在设计和实现上参考了以下开源项目：
-
-| 项目 | 参考内容 |
-|------|---------|
-| [Simon-Evan/polymarket-trading-bot](https://github.com/Simon-Evan/polymarket-trading-bot) | 双策略框架（trade_1/trade_2）、重试机制、决策引擎设计 |
-| [sysnexus1/polymarket-arbitrage-bot](https://github.com/sysnexus1/polymarket-arbitrage-bot) | AdaptivePricePredictor（在线线性回归）、pole detection、accuracy tracking |
-| [Dougthethugg/polymarket-trading-bot](https://github.com/Dougthethugg/polymarket-trading-bot) | Dump-and-hedge 策略、状态机设计、history.toml 复盘日志 |
-
 ## 免责声明
 
 本项目仅供教育与研究目的。预测市场和加密货币合约交易存在重大财务风险，包括可能亏损全部资金。历史表现不代表未来结果。你须自行承担使用本软件的所有风险。
