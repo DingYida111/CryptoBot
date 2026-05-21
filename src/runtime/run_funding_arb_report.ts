@@ -1,4 +1,5 @@
 import { getDb } from "../monitor/storage.js";
+import { isRuntimeDecisionTrace, summarizeRuntimeDecisionTraces } from "../portfolio/decision_trace_report.js";
 
 interface PackageLedgerSummaryView {
   readonly basisId: string | null;
@@ -218,9 +219,7 @@ const recentEventPackageLedgers = (recentEvents as Array<Record<string, unknown>
 const recentSnapshotConsistency = (recentPortfolioSnapshots as Array<Record<string, unknown>>)
   .map((row) => {
     const parsed = safeParseJson(row.raw_json);
-    const decisionTrace = parsed?.decisionTrace && typeof parsed.decisionTrace === "object"
-      ? parsed.decisionTrace as Record<string, unknown>
-      : null;
+    const decisionTrace = isRuntimeDecisionTrace(parsed?.decisionTrace) ? parsed.decisionTrace : null;
     const activePackageLedger = toPackageLedgerSummary(parsed?.activePackageLedger);
     const diff = toDecisionTraceDiff(decisionTrace?.diff);
     const portfolioState = parsed?.portfolioState && typeof parsed.portfolioState === "object"
@@ -239,6 +238,20 @@ const recentSnapshotConsistency = (recentPortfolioSnapshots as Array<Record<stri
       activePackageLedger,
     };
   });
+
+const traceReport = summarizeRuntimeDecisionTraces(
+  (recentPortfolioSnapshots as Array<Record<string, unknown>>)
+    .map((row) => {
+      const parsed = safeParseJson(row.raw_json);
+      const trace = parsed?.decisionTrace;
+      if (!isRuntimeDecisionTrace(trace)) return null;
+      return {
+        trace,
+        createdAt: typeof row.created_at === "number" ? row.created_at : null,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null),
+);
 
 const snapshotConsistencySummary = {
   totalSnapshots: recentSnapshotConsistency.length,
@@ -259,4 +272,7 @@ console.log(JSON.stringify({
   recentPortfolioSnapshots,
   recentSnapshotConsistency,
   snapshotConsistencySummary,
+  traceSummary: traceReport.summary,
+  recentTraceAlerts: traceReport.alerts.slice(0, 20),
+  recentTraceRows: traceReport.rows.slice(0, 10),
 }, null, 2));

@@ -1,4 +1,5 @@
 import { getDb } from "../monitor/storage.js";
+import { isRuntimeDecisionTrace, summarizeRuntimeDecisionTraces } from "./decision_trace_report.js";
 import type { PortfolioShadowReportRow } from "./shadow_report.js";
 import { extractShadowMismatchDetails, summarizeShadowRows } from "./shadow_report.js";
 
@@ -14,6 +15,7 @@ interface ShadowRowDb {
   shadow_residual_contracts: number | null;
   shadow_residual_reason: string | null;
   diff_pct: number | null;
+  raw_json: string;
   created_at: number;
 }
 
@@ -69,6 +71,17 @@ const options = parseCliOptions(process.argv.slice(2));
 const limit = options.limit;
 
 const db = getDb();
+
+function safeParseJson(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
 const availableVersions = db.prepare(`
   SELECT DISTINCT shadow_version
   FROM portfolio_shadow_log
@@ -102,6 +115,7 @@ const rows = resolvedVersion === null
         shadow_residual_contracts,
         shadow_residual_reason,
         diff_pct,
+        raw_json,
         created_at
       FROM portfolio_shadow_log
       ORDER BY id DESC
@@ -120,6 +134,7 @@ const rows = resolvedVersion === null
         shadow_residual_contracts,
         shadow_residual_reason,
         diff_pct,
+        raw_json,
         created_at
       FROM portfolio_shadow_log
       WHERE shadow_version = ?
@@ -158,6 +173,16 @@ const mapped: PortfolioShadowReportRow[] = rows.map((row) => ({
 
 const summary = summarizeShadowRows(mapped);
 const mismatches = extractShadowMismatchDetails(mapped, 10);
+const traceReport = summarizeRuntimeDecisionTraces(
+  rows
+    .map((row) => {
+      const parsed = safeParseJson(row.raw_json);
+      const trace = parsed?.decisionTrace;
+      if (!isRuntimeDecisionTrace(trace)) return null;
+      return { trace, createdAt: row.created_at };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null),
+);
 console.log(JSON.stringify({
   limit,
   shadowVersion: resolvedVersion,
@@ -167,5 +192,8 @@ console.log(JSON.stringify({
     .filter((value): value is string => value !== null),
   summary,
   mismatches,
+  traceSummary: traceReport.summary,
+  recentTraceAlerts: traceReport.alerts.slice(0, 20),
+  recentTraceRows: traceReport.rows.slice(0, 10),
   recentResiduals: residualRows,
 }, null, 2));
