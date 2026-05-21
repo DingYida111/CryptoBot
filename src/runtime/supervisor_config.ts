@@ -10,6 +10,11 @@ const BooleanString = z
   .default("false")
   .transform((value) => value === "true");
 
+const TrueBooleanString = z
+  .string()
+  .default("true")
+  .transform((value) => value === "true");
+
 const StrategyValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 
 const ManagedStrategyInstanceSchema = z.object({
@@ -51,6 +56,12 @@ export const StrategySupervisorEnvSchema = z.object({
     .string()
     .default("true")
     .transform((value) => value === "true"),
+  RUNTIME_TRACE_OBSERVER_ENABLED: BooleanString,
+  RUNTIME_TRACE_OBSERVER_LIMIT: z.coerce.number().int().positive().default(200),
+  RUNTIME_TRACE_OBSERVER_PERSIST_MESSAGES: TrueBooleanString,
+  RUNTIME_TRACE_OBSERVER_NOTIFY_DRY_RUN: TrueBooleanString,
+  RUNTIME_TRACE_OBSERVER_NOTIFY: BooleanString,
+  RUNTIME_NOTIFY_WEBHOOK_URL: z.string().optional(),
   MANAGED_STRATEGY_INSTANCES_JSON: z.string().optional(),
 });
 

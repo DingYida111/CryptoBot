@@ -45,6 +45,13 @@ Portfolio algebra shadow diagnostics:
 - `RUNTIME_NOTIFY_WEBHOOK_URL=https://... npm run report:runtime-traces -- 50 --notify` — 发送 `notify=true` 的消息到 webhook
 - `npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run` — 生成一条模拟 `instrument_error`，验证消息落库和 dry-run 通知链路，不触发任何交易动作
 
+Supervisor observe-only runtime trace monitoring:
+
+- `RUNTIME_TRACE_OBSERVER_ENABLED=true` — supervisor 每轮 sync 后自动扫描 RuntimeDecisionTrace
+- `RUNTIME_TRACE_OBSERVER_PERSIST_MESSAGES=true` — 写入 `runtime_messages`，默认 true
+- `RUNTIME_TRACE_OBSERVER_NOTIFY_DRY_RUN=true` — 只打印将通知的消息，默认 true
+- `RUNTIME_TRACE_OBSERVER_NOTIFY=true` — 真实发送 `notify=true` 的消息；不会暂停、不平仓、不改变交易路径
+
 Funding arbitrage diagnostics:
 
 - `npm run run:funding-arb:validate` — 运行本地 funding arbitrage controller 的 shadow 或 paper 验证

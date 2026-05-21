@@ -1,14 +1,8 @@
-import { getDb, insertRuntimeMessage } from "../monitor/storage.js";
-import { sendRuntimeNotifications } from "../runtime/runtime_notifications.js";
 import {
-  buildRuntimeTraceMessages,
   DEFAULT_RUNTIME_TRACE_ALERT_THRESHOLDS,
-  isRuntimeDecisionTrace,
-  summarizeRuntimeDecisionTraces,
   type RuntimeDecisionTraceAlertThresholds,
-  type RuntimeTraceMessage,
 } from "./decision_trace_report.js";
-import type { RuntimeDecisionTrace } from "./portfolio_types.js";
+import { observeRuntimeTraces } from "../runtime/runtime_trace_observer.js";
 
 interface CliOptions {
   readonly limit: number;
@@ -20,21 +14,6 @@ interface CliOptions {
   readonly notifyDryRun: boolean;
   readonly notify: boolean;
   readonly webhookUrl: string | null;
-}
-
-interface TraceInput {
-  readonly trace: RuntimeDecisionTrace;
-  readonly createdAt: number | null;
-  readonly surface: "portfolio_shadow_log" | "portfolio_snapshots";
-  readonly rowId: number;
-}
-
-interface RawTraceRow {
-  readonly id: number;
-  readonly source: string;
-  readonly shadow_version: string | null;
-  readonly raw_json: string;
-  readonly created_at: number;
 }
 
 function parsePositiveNumber(value: string | undefined): number | null {
@@ -144,158 +123,27 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
   };
 }
 
-function safeParseJson(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "string" || value.trim().length === 0) return null;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
-}
-
-function toTraceInput(
-  row: RawTraceRow,
-  surface: TraceInput["surface"],
-): TraceInput | null {
-  const parsed = safeParseJson(row.raw_json);
-  const trace = parsed?.decisionTrace;
-  if (!isRuntimeDecisionTrace(trace)) return null;
-  return {
-    trace,
-    createdAt: row.created_at,
-    surface,
-    rowId: row.id,
-  };
-}
-
-function sourceFilter(source: string | null): string {
-  return source === null ? "" : " AND source = ?";
-}
-
-function versionFilter(version: string | null, allVersions: boolean): string {
-  if (allVersions || version === null) return "";
-  return " AND shadow_version = ?";
-}
-
-function queryRows(input: {
-  readonly tableName: "portfolio_shadow_log" | "portfolio_snapshots";
-  readonly source: string | null;
-  readonly version: string | null;
-  readonly allVersions: boolean;
-  readonly limit: number;
-}): RawTraceRow[] {
-  const db = getDb();
-  const params: Array<string | number> = [];
-  if (input.source !== null) params.push(input.source);
-  if (!input.allVersions && input.version !== null) params.push(input.version);
-  params.push(input.limit);
-  return db.prepare(`
-    SELECT id, source, shadow_version, raw_json, created_at
-    FROM ${input.tableName}
-    WHERE raw_json IS NOT NULL
-      ${sourceFilter(input.source)}
-      ${versionFilter(input.version, input.allVersions)}
-    ORDER BY id DESC
-    LIMIT ?
-  `).all(...params) as RawTraceRow[];
-}
-
 async function main(): Promise<void> {
   const options = parseCliOptions(process.argv.slice(2));
-  const shadowRows = queryRows({
-    tableName: "portfolio_shadow_log",
-    source: options.source,
-    version: options.version,
-    allVersions: options.allVersions,
-    limit: options.limit,
-  });
-  const snapshotRows = queryRows({
-    tableName: "portfolio_snapshots",
-    source: options.source,
-    version: options.version,
-    allVersions: options.allVersions,
-    limit: options.limit,
-  });
-
-  const traces = [
-    ...shadowRows
-      .map((row) => toTraceInput(row, "portfolio_shadow_log"))
-      .filter((row): row is TraceInput => row !== null),
-    ...snapshotRows
-      .map((row) => toTraceInput(row, "portfolio_snapshots"))
-      .filter((row): row is TraceInput => row !== null),
-  ]
-    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-    .slice(0, options.limit);
-
-  const traceReport = summarizeRuntimeDecisionTraces(traces, options.thresholds);
-  const messagesWithSurface = traceReport.rows.flatMap((row, index) =>
-    buildRuntimeTraceMessages(row, options.thresholds).map((message) => ({
-      message,
-      surface: traces[index]?.surface ?? "unknown",
-      rowId: traces[index]?.rowId ?? 0,
-    }))
-  );
-  const emittedAt = Date.now();
-  const persistedMessageCount = options.persistMessages
-    ? messagesWithSurface.filter((row) => insertRuntimeMessage({
-        surface: row.surface,
-        surfaceRowId: row.rowId,
-        code: row.message.code,
-        category: row.message.category,
-        scope: row.message.scope,
-        source: row.message.source,
-        traceVersion: row.message.traceVersion,
-        affectedInstrumentIdsJson: JSON.stringify(row.message.affectedInstrumentIds),
-        notify: row.message.notify,
-        message: row.message.message,
-        metricsJson: JSON.stringify(row.message.metrics),
-        rawJson: JSON.stringify(row.message),
-        createdAt: row.message.createdAt ?? emittedAt,
-        emittedAt,
-      })).length
-    : 0;
-  const notificationMessages = messagesWithSurface
-    .map((row) => row.message)
-    .filter((message): message is RuntimeTraceMessage => message.notify);
-  const notificationResults = (options.notify || options.notifyDryRun)
-    ? await sendRuntimeNotifications(notificationMessages, {
-        dryRun: options.notifyDryRun || !options.notify,
-        webhookUrl: options.webhookUrl,
-        consoleSink: true,
-      })
-    : [];
+  const result = await observeRuntimeTraces(options);
+  const traceReport = result.traceReport;
 
   console.log(JSON.stringify({
-    limit: options.limit,
-    source: options.source,
-    version: options.allVersions ? null : options.version,
-    allVersions: options.allVersions,
-    thresholds: options.thresholds,
-    messagePersistence: {
-      enabled: options.persistMessages,
-      insertedCount: persistedMessageCount,
-      candidateCount: messagesWithSurface.length,
-    },
-    notification: {
-      enabled: options.notify || options.notifyDryRun,
-      dryRun: options.notifyDryRun || !options.notify,
-      webhookConfigured: Boolean(options.webhookUrl?.trim()),
-      results: notificationResults,
-    },
-    surfaces: {
-      portfolioShadowLogRows: shadowRows.length,
-      portfolioSnapshotsRows: snapshotRows.length,
-      extractedTraces: traces.length,
-    },
+    limit: result.limit,
+    source: result.source,
+    version: result.version,
+    allVersions: result.allVersions,
+    thresholds: result.thresholds,
+    messagePersistence: result.messagePersistence,
+    notification: result.notification,
+    surfaces: result.surfaces,
     traceHealth: traceReport.health,
     traceSummary: traceReport.summary,
     messageSummary: traceReport.messageSummary,
     recentTraceVerdicts: traceReport.verdicts.slice(0, 50).map((verdict, index) => ({
       ...verdict,
-      surface: traces[index]?.surface ?? null,
-      rowId: traces[index]?.rowId ?? null,
+      surface: result.traces[index]?.surface ?? null,
+      rowId: result.traces[index]?.rowId ?? null,
     })),
     notifyMessages: traceReport.notifyMessages.slice(0, 50),
     recentMessages: traceReport.messages.slice(0, 50),

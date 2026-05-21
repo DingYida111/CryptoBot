@@ -1,6 +1,7 @@
 import { config as dotenvConfig } from "dotenv";
 import { BenchmarkEnvSchema, loadManagedStrategyInstances, StrategySupervisorEnvSchema } from "./supervisor_config.js";
 import { createStrategySupervisor } from "./strategy_supervisor.js";
+import { observeRuntimeTraces } from "./runtime_trace_observer.js";
 
 dotenvConfig();
 
@@ -49,6 +50,26 @@ async function runOnce(): Promise<void> {
     }
     if (result.error) fields.error = result.error;
     log("instance sync result", fields);
+  }
+
+  if (supervisorEnv.RUNTIME_TRACE_OBSERVER_ENABLED) {
+    const observerResult = await observeRuntimeTraces({
+      limit: supervisorEnv.RUNTIME_TRACE_OBSERVER_LIMIT,
+      persistMessages: supervisorEnv.RUNTIME_TRACE_OBSERVER_PERSIST_MESSAGES,
+      notifyDryRun: supervisorEnv.RUNTIME_TRACE_OBSERVER_NOTIFY_DRY_RUN,
+      notify: supervisorEnv.RUNTIME_TRACE_OBSERVER_NOTIFY,
+      webhookUrl: supervisorEnv.RUNTIME_NOTIFY_WEBHOOK_URL ?? null,
+    });
+    log("runtime trace observer result", {
+      observeOnly: true,
+      traces: observerResult.surfaces.extractedTraces,
+      insertedMessages: observerResult.messagePersistence.insertedCount,
+      messageCandidates: observerResult.messagePersistence.candidateCount,
+      notifyCandidates: observerResult.notification.candidateCount,
+      notificationEnabled: observerResult.notification.enabled,
+      notificationDryRun: observerResult.notification.dryRun,
+      health: observerResult.traceReport.health.status,
+    });
   }
 }
 
