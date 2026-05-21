@@ -17,6 +17,14 @@ export interface RuntimeControlEffect {
   readonly reason: string;
 }
 
+export interface RuntimeControlEffectLedgerRow extends RuntimeControlEffect {
+  readonly runtimeActionId: number;
+  readonly source: string;
+  readonly actionType: string;
+  readonly messageCode: string;
+  readonly status: "planned";
+}
+
 function instrumentTargets(row: RuntimeActionReportRow): readonly string[] {
   return row.affectedInstrumentIds.length > 0 ? row.affectedInstrumentIds : [];
 }
@@ -79,4 +87,19 @@ export function summarizeRuntimeControlEffects(
   return [...counts.entries()]
     .map(([effectType, count]) => ({ effectType, count }))
     .sort((a, b) => b.count - a.count || a.effectType.localeCompare(b.effectType));
+}
+
+export function buildRuntimeControlEffectLedgerRows(
+  rows: readonly RuntimeActionExecutionPlanRow[],
+): readonly RuntimeControlEffectLedgerRow[] {
+  return rows.flatMap((row) =>
+    row.controlEffects.map((effect) => ({
+      ...effect,
+      runtimeActionId: row.id,
+      source: row.source,
+      actionType: row.actionType,
+      messageCode: row.messageCode,
+      status: "planned" as const,
+    }))
+  );
 }

@@ -69,6 +69,7 @@ Supervisor observe-only runtime trace monitoring:
 - `RUNTIME_ACTION_EXECUTOR_COOLDOWN_MS=300000` — dry-run cooldown/dedupe 窗口
 - `RUNTIME_ACTION_EXECUTOR_LIVE_EXECUTION_ENABLED=true` — 仅用于 preflight 建模 live readiness，当前仍不执行
 - `RUNTIME_ACTION_EXECUTOR_TRADING_ADAPTER_CONFIGURED=true` — 仅用于 preflight 建模 adapter readiness
+- `RUNTIME_ACTION_EXECUTOR_PERSIST_CONTROL_EFFECTS=true` — 将 ready action 的 control effects 写入审计表，默认 false
 
 Funding arbitrage diagnostics:
 
@@ -528,6 +529,10 @@ Funding arbitrage 示例：
   - dry-run 展示未来执行器会处理哪些动作、adapter operation 和 control effects，不暂停、不平仓
 - `npm run run:runtime-action-executor -- 20 --simulate-live-execution-enabled --simulate-trading-adapter-configured`
   - 仅模拟 live preflight readiness，仍不触发交易
+- `npm run run:runtime-action-executor -- 20 --simulate-live-execution-enabled --simulate-trading-adapter-configured --persist-control-effects`
+  - 将 ready action 的 control effects 写入 `runtime_control_effects`，仍不干预运行
+- `npm run report:runtime-control -- 20`
+  - 汇总已持久化的 planned control effects
 - `npm run run:runtime-action-executor -- 20 --source runtime_trace_fixture --ack-dry-run`
   - 将 dry-run 状态写回本地 `runtime_actions`，仍不触发交易
 

@@ -288,6 +288,31 @@ function initSchema(db: Database.Database): void {
       ON runtime_actions(status, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runtime_actions_action_type_created_at
       ON runtime_actions(action_type, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS runtime_control_effects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      runtime_action_id INTEGER NOT NULL,
+      effect_type TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      value TEXT NOT NULL,
+      status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      message_code TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      observed_at INTEGER NOT NULL,
+      UNIQUE(runtime_action_id, effect_type, target_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_control_effects_created_at
+      ON runtime_control_effects(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_runtime_control_effects_target_created_at
+      ON runtime_control_effects(target_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_runtime_control_effects_status_created_at
+      ON runtime_control_effects(status, created_at DESC);
   `);
 
   const columns = new Set(
@@ -535,6 +560,22 @@ export interface RuntimeActionRecord {
   proposedAt: number;
   updatedAt?: number | null;
   executorNote?: string | null;
+}
+
+export interface RuntimeControlEffectRecord {
+  runtimeActionId: number;
+  effectType: string;
+  scope: string;
+  targetId: string;
+  value: string;
+  status: string;
+  source: string;
+  actionType: string;
+  messageCode: string;
+  reason: string;
+  rawJson: string;
+  createdAt: number;
+  observedAt: number;
 }
 
 export function insertTick(tick: Tick): void {
@@ -982,6 +1023,31 @@ export function updateRuntimeActionStatus(input: {
     input.updatedAt,
     input.executorNote ?? null,
     input.id,
+  );
+  return result.changes > 0;
+}
+
+export function insertRuntimeControlEffect(record: RuntimeControlEffectRecord): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO runtime_control_effects (
+      runtime_action_id, effect_type, scope, target_id, value, status,
+      source, action_type, message_code, reason, raw_json, created_at, observed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.runtimeActionId,
+    record.effectType,
+    record.scope,
+    record.targetId,
+    record.value,
+    record.status,
+    record.source,
+    record.actionType,
+    record.messageCode,
+    record.reason,
+    record.rawJson,
+    record.createdAt,
+    record.observedAt,
   );
   return result.changes > 0;
 }

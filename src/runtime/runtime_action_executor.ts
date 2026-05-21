@@ -1,13 +1,15 @@
-import { getDb, updateRuntimeActionStatus } from "../monitor/storage.js";
+import { getDb, insertRuntimeControlEffect, updateRuntimeActionStatus } from "../monitor/storage.js";
 import {
   createNoopRuntimeActionExecutionAdapter,
   type RuntimeActionAdapterOperation,
   type RuntimeActionExecutionAdapter,
 } from "./runtime_action_adapter.js";
 import {
+  buildRuntimeControlEffectLedgerRows,
   buildRuntimeControlEffectsForAction,
   summarizeRuntimeControlEffects,
   type RuntimeControlEffect,
+  type RuntimeControlEffectLedgerRow,
 } from "./runtime_control.js";
 import {
   findRuntimeActionCooldownDuplicates,
@@ -93,6 +95,7 @@ export interface RuntimeActionExecutorOptions {
   readonly ackDryRun?: boolean;
   readonly liveExecutionEnabled?: boolean;
   readonly tradingAdapterConfigured?: boolean;
+  readonly persistControlEffects?: boolean;
 }
 
 export interface RuntimeActionExecutorResult {
@@ -108,6 +111,11 @@ export interface RuntimeActionExecutorResult {
   readonly liveExecutionEnabled: boolean;
   readonly tradingAdapterConfigured: boolean;
   readonly acknowledgedCount: number;
+  readonly controlEffectPersistence: {
+    readonly enabled: boolean;
+    readonly candidateCount: number;
+    readonly insertedCount: number;
+  };
   readonly plan: RuntimeActionExecutionPlan;
 }
 
@@ -420,6 +428,24 @@ export function buildRuntimeActionExecutionPlan(input: {
   };
 }
 
+function persistControlEffect(row: RuntimeControlEffectLedgerRow, observedAt: number): boolean {
+  return insertRuntimeControlEffect({
+    runtimeActionId: row.runtimeActionId,
+    effectType: row.effectType,
+    scope: row.scope,
+    targetId: row.targetId,
+    value: row.value,
+    status: row.status,
+    source: row.source,
+    actionType: row.actionType,
+    messageCode: row.messageCode,
+    reason: row.reason,
+    rawJson: JSON.stringify(row),
+    createdAt: observedAt,
+    observedAt,
+  });
+}
+
 export function executeRuntimeActionDryRun(
   options: RuntimeActionExecutorOptions,
 ): RuntimeActionExecutorResult {
@@ -452,6 +478,12 @@ export function executeRuntimeActionDryRun(
         })
       ).length
     : 0;
+  const controlEffectRows = buildRuntimeControlEffectLedgerRows(plan.rows);
+  const persistControlEffects = options.persistControlEffects ?? false;
+  const controlEffectObservedAt = Date.now();
+  const insertedControlEffects = persistControlEffects
+    ? controlEffectRows.filter((row) => persistControlEffect(row, controlEffectObservedAt)).length
+    : 0;
 
   return {
     limit: options.limit,
@@ -466,6 +498,11 @@ export function executeRuntimeActionDryRun(
     liveExecutionEnabled,
     tradingAdapterConfigured,
     acknowledgedCount,
+    controlEffectPersistence: {
+      enabled: persistControlEffects,
+      candidateCount: controlEffectRows.length,
+      insertedCount: insertedControlEffects,
+    },
     plan,
   };
 }

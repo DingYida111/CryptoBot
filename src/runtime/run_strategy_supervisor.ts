@@ -86,6 +86,7 @@ async function runOnce(): Promise<void> {
       ackDryRun: supervisorEnv.RUNTIME_ACTION_EXECUTOR_ACK_DRY_RUN,
       liveExecutionEnabled: supervisorEnv.RUNTIME_ACTION_EXECUTOR_LIVE_EXECUTION_ENABLED,
       tradingAdapterConfigured: supervisorEnv.RUNTIME_ACTION_EXECUTOR_TRADING_ADAPTER_CONFIGURED,
+      persistControlEffects: supervisorEnv.RUNTIME_ACTION_EXECUTOR_PERSIST_CONTROL_EFFECTS,
       status: "proposed",
     });
     log("runtime action executor dry-run result", {
@@ -102,6 +103,8 @@ async function runOnce(): Promise<void> {
       blockedCount: executorResult.plan.blockedCount,
       adapterOperationCount: executorResult.plan.adapterOperationCount,
       controlEffectCount: executorResult.plan.controlEffectCount,
+      insertedControlEffects: executorResult.controlEffectPersistence.insertedCount,
+      controlEffectPersistenceEnabled: executorResult.controlEffectPersistence.enabled,
       controlEffectSummary: executorResult.plan.controlEffectSummary,
       blockerSummary: executorResult.plan.blockerSummary,
     });

@@ -298,6 +298,9 @@ Ready executable actions also produce observe-only control effects:
 - `flatten_instrument_request`
 
 These effects are currently plan-only. They do not write a control-state table or block strategy sync.
+When `--persist-control-effects` or `RUNTIME_ACTION_EXECUTOR_PERSIST_CONTROL_EFFECTS=true` is enabled,
+ready effects are written to `runtime_control_effects` with `status = planned`.
+This remains an audit ledger and does not block strategy sync.
 
 ## 4. Current Architectural Layers
 

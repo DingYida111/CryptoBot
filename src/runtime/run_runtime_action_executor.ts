@@ -10,6 +10,7 @@ interface CliOptions {
   readonly ackDryRun: boolean;
   readonly liveExecutionEnabled: boolean;
   readonly tradingAdapterConfigured: boolean;
+  readonly persistControlEffects: boolean;
 }
 
 function parsePositiveNumber(value: string | undefined): number | null {
@@ -28,6 +29,7 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
   let ackDryRun = false;
   let liveExecutionEnabled = false;
   let tradingAdapterConfigured = false;
+  let persistControlEffects = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -84,6 +86,10 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
       tradingAdapterConfigured = true;
       continue;
     }
+    if (arg === "--persist-control-effects") {
+      persistControlEffects = true;
+      continue;
+    }
     const parsed = parsePositiveNumber(arg);
     if (parsed !== null) {
       limit = Math.floor(parsed);
@@ -100,6 +106,7 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
     ackDryRun,
     liveExecutionEnabled,
     tradingAdapterConfigured,
+    persistControlEffects,
   };
 }
 
