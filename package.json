@@ -11,7 +11,10 @@
     "benchmark:okx-grid": "tsx src/runtime/run_okx_grid_benchmark.ts",
     "supervisor:strategies": "tsx src/runtime/run_strategy_supervisor.ts",
     "test:portfolio": "node --import tsx --test src/portfolio/**/*.test.ts",
+    "test:carry": "node --import tsx --test src/carry/**/*.test.ts",
     "report:portfolio-shadow": "node --import tsx src/portfolio/run_shadow_report.ts",
+    "run:funding-arb:validate": "node --import tsx src/runtime/run_funding_arbitrage_validation.ts",
+    "run:okx-batch-funding-validate": "node --import tsx src/trade/run_okx_batch_funding_pair_validation.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },

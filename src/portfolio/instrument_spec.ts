@@ -38,7 +38,7 @@ export function buildBtcSwapInstrumentSpec(contractMultiplier = DEFAULT_BTC_SWAP
 
 export function buildBtcSwapInstrumentSpecFromMeta(meta: OkxInstrumentMeta | null | undefined): InstrumentSpec {
   const multiplier =
-    meta && Number.isFinite(meta.ctVal) && meta.ctVal > 0
+    meta && typeof meta.ctVal === "number" && Number.isFinite(meta.ctVal) && meta.ctVal > 0
       ? meta.ctVal
       : DEFAULT_BTC_SWAP_CONTRACT_MULTIPLIER;
   return buildBtcSwapInstrumentSpec(multiplier);

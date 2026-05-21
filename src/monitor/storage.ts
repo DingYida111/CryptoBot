@@ -189,6 +189,50 @@ function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_portfolio_residuals_created_at
       ON portfolio_residuals(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS funding_arb_opportunities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      spot_inst_id TEXT NOT NULL,
+      perp_inst_id TEXT NOT NULL,
+      funding_rate REAL,
+      next_funding_time_ms INTEGER,
+      basis_bps REAL,
+      candidate_btc_size REAL,
+      candidate_swap_contracts REAL,
+      expected_funding_usd REAL,
+      expected_fees_usd REAL,
+      expected_slippage_usd REAL,
+      expected_basis_risk_usd REAL,
+      net_carry_edge_usd REAL,
+      should_enter INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_funding_arb_opportunities_instance_created_at
+      ON funding_arb_opportunities(instance_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS funding_arb_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      phase TEXT NOT NULL,
+      spot_inst_id TEXT NOT NULL,
+      perp_inst_id TEXT NOT NULL,
+      spot_ord_id TEXT,
+      perp_ord_id TEXT,
+      package_btc_size REAL,
+      swap_contracts REAL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_funding_arb_events_instance_created_at
+      ON funding_arb_events(instance_id, created_at DESC);
   `);
 
   const columns = new Set(
@@ -347,6 +391,42 @@ export interface PortfolioResidualRecord {
   instId: string;
   quantity: number;
   reasonCode: string;
+  rawJson: string;
+  createdAt: number;
+}
+
+export interface FundingArbOpportunityRecord {
+  source: string;
+  instanceId: string;
+  mode: string;
+  spotInstId: string;
+  perpInstId: string;
+  fundingRate?: number | null;
+  nextFundingTimeMs?: number | null;
+  basisBps?: number | null;
+  candidateBtcSize?: number | null;
+  candidateSwapContracts?: number | null;
+  expectedFundingUsd?: number | null;
+  expectedFeesUsd?: number | null;
+  expectedSlippageUsd?: number | null;
+  expectedBasisRiskUsd?: number | null;
+  netCarryEdgeUsd?: number | null;
+  shouldEnter: boolean;
+  reason: string;
+  rawJson: string;
+  createdAt: number;
+}
+
+export interface FundingArbEventRecord {
+  source: string;
+  instanceId: string;
+  phase: string;
+  spotInstId: string;
+  perpInstId: string;
+  spotOrdId?: string | null;
+  perpOrdId?: string | null;
+  packageBtcSize?: number | null;
+  swapContracts?: number | null;
   rawJson: string;
   createdAt: number;
 }
@@ -662,6 +742,61 @@ export function insertPortfolioResidual(record: PortfolioResidualRecord): number
     record.instId,
     record.quantity,
     record.reasonCode,
+    record.rawJson,
+    record.createdAt
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function insertFundingArbOpportunity(record: FundingArbOpportunityRecord): number {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO funding_arb_opportunities (
+      source, instance_id, mode, spot_inst_id, perp_inst_id, funding_rate, next_funding_time_ms,
+      basis_bps, candidate_btc_size, candidate_swap_contracts, expected_funding_usd, expected_fees_usd,
+      expected_slippage_usd, expected_basis_risk_usd, net_carry_edge_usd, should_enter, reason, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.source,
+    record.instanceId,
+    record.mode,
+    record.spotInstId,
+    record.perpInstId,
+    record.fundingRate ?? null,
+    record.nextFundingTimeMs ?? null,
+    record.basisBps ?? null,
+    record.candidateBtcSize ?? null,
+    record.candidateSwapContracts ?? null,
+    record.expectedFundingUsd ?? null,
+    record.expectedFeesUsd ?? null,
+    record.expectedSlippageUsd ?? null,
+    record.expectedBasisRiskUsd ?? null,
+    record.netCarryEdgeUsd ?? null,
+    record.shouldEnter ? 1 : 0,
+    record.reason,
+    record.rawJson,
+    record.createdAt
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function insertFundingArbEvent(record: FundingArbEventRecord): number {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO funding_arb_events (
+      source, instance_id, phase, spot_inst_id, perp_inst_id, spot_ord_id, perp_ord_id,
+      package_btc_size, swap_contracts, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.source,
+    record.instanceId,
+    record.phase,
+    record.spotInstId,
+    record.perpInstId,
+    record.spotOrdId ?? null,
+    record.perpOrdId ?? null,
+    record.packageBtcSize ?? null,
+    record.swapContracts ?? null,
     record.rawJson,
     record.createdAt
   );

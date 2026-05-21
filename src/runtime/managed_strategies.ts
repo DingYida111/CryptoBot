@@ -5,13 +5,15 @@ export type ManagedStrategyType =
   | "local_chop_grid"
   | "okx_contract_grid"
   | "okx_martingale"
-  | "local_spread_arbitrage";
+  | "local_spread_arbitrage"
+  | "local_funding_arbitrage";
 
 export const MANAGED_STRATEGY_TYPES: ManagedStrategyType[] = [
   "local_chop_grid",
   "okx_contract_grid",
   "okx_martingale",
   "local_spread_arbitrage",
+  "local_funding_arbitrage",
 ];
 
 export type StrategyLifecycleState =
@@ -173,6 +175,31 @@ export const BUILTIN_MANAGED_STRATEGIES: ManagedStrategyDefinition[] = [
     parameters: [
       { key: "entrySpreadBps", label: "Entry Spread bps", type: "number", required: true, defaultValue: 15, description: "Minimum spread before opening a spread trade." },
       { key: "maxLegSize", label: "Max Leg Size", type: "number", required: true, defaultValue: 10, description: "Maximum contracts per leg." },
+    ],
+  },
+  {
+    type: "local_funding_arbitrage",
+    backend: "local",
+    venue: "cryptobot",
+    label: "Local Funding Arbitrage",
+    description: "CryptoBot self-managed BTC spot + perp funding-capture strategy with shadow-first and paper execution modes.",
+    supportsRemotePnl: false,
+    parameters: [
+      { key: "spotInstId", label: "Spot Instrument", type: "string", required: true, defaultValue: "BTC-USDT", description: "OKX spot instrument for the long hedge leg." },
+      { key: "perpInstId", label: "Perp Instrument", type: "string", required: true, defaultValue: "BTC-USDT-SWAP", description: "OKX perpetual instrument for the short funding leg." },
+      { key: "entryLeadMs", label: "Entry Lead Ms", type: "number", required: true, defaultValue: 120000, description: "How long before funding settlement the strategy is allowed to enter." },
+      { key: "maxPackageSizeBtc", label: "Max Package BTC", type: "number", required: true, defaultValue: 0.01, description: "Maximum BTC-equivalent package size." },
+      { key: "minUsefulPackageSizeBtc", label: "Min Useful BTC", type: "number", required: true, defaultValue: 0.01, description: "Minimum BTC-equivalent package size required to trade." },
+      { key: "spotFeeRate", label: "Spot Fee Rate", type: "number", required: true, defaultValue: 0.001, description: "Spot fee assumption used in carry gating." },
+      { key: "perpFeeRate", label: "Perp Fee Rate", type: "number", required: true, defaultValue: 0.0005, description: "Perp fee assumption used in carry gating." },
+      { key: "spotSlippageBps", label: "Spot Slippage bps", type: "number", required: true, defaultValue: 5, description: "Spot slippage budget in bps." },
+      { key: "perpSlippageBps", label: "Perp Slippage bps", type: "number", required: true, defaultValue: 5, description: "Perp slippage budget in bps." },
+      { key: "basisRiskBufferBps", label: "Basis Buffer bps", type: "number", required: true, defaultValue: 8, description: "Basis-risk buffer used in net-edge gating." },
+      { key: "safetyBufferUsd", label: "Safety Buffer USD", type: "number", required: true, defaultValue: 1, description: "Minimum positive net edge required for standard entry." },
+      { key: "paperExecute", label: "Paper Execute", type: "boolean", required: true, defaultValue: false, description: "When true, place demo orders instead of shadow-only evaluation." },
+      { key: "forceValidationEntry", label: "Force Validation Entry", type: "boolean", required: true, defaultValue: false, description: "Allow a paper validation package even outside the normal funding entry window." },
+      { key: "maxHoldMs", label: "Max Hold Ms", type: "number", required: true, defaultValue: 300000, description: "Maximum time to keep the package open after entry." },
+      { key: "maxNetDeltaToleranceBtc", label: "Max Net Delta BTC", type: "number", required: true, defaultValue: 0.002, description: "Maximum tolerated hedge mismatch in BTC before aborting." },
     ],
   },
 ];

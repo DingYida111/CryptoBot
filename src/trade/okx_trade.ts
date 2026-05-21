@@ -91,8 +91,21 @@ export async function okxPrivateRequest<T = any>(
 }
 
 export interface AccountBalance {
-  totalEq: string; isoEq: string; adjEq: string;
-  imr: string; mmr: string; upl: string; currency: string;
+  totalEq: string;
+  isoEq?: string;
+  adjEq?: string;
+  imr?: string;
+  mmr?: string;
+  upl?: string;
+  currency?: string;
+  details?: Array<{
+    ccy?: string;
+    availEq?: string;
+    cashBal?: string;
+    eq?: string;
+    availBal?: string;
+    frozenBal?: string;
+  }>;
 }
 
 export async function getAccountBalance(): Promise<AccountBalance[] | null> {
@@ -103,6 +116,37 @@ export async function getAccountBalance(): Promise<AccountBalance[] | null> {
     console.error("getAccountBalance error:", data);
     return null;
   } catch (e) { console.error("getAccountBalance exception:", e); return null; }
+}
+
+function parseNumericField(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+export async function getAssetBalance(ccy: string): Promise<{
+  ccy: string;
+  availEq: number;
+  cashBal: number;
+  eq: number;
+  availBal: number;
+  frozenBal: number;
+} | null> {
+  const balances = await getAccountBalance();
+  const account = balances?.[0];
+  const detail = account?.details?.find((row) => row.ccy === ccy);
+  if (!detail) return null;
+  return {
+    ccy,
+    availEq: parseNumericField(detail.availEq),
+    cashBal: parseNumericField(detail.cashBal),
+    eq: parseNumericField(detail.eq),
+    availBal: parseNumericField(detail.availBal),
+    frozenBal: parseNumericField(detail.frozenBal),
+  };
 }
 
 export interface Position {
@@ -127,7 +171,7 @@ const CANCEL_BATCH_SIZE = 20;
 export interface OrderRequest {
   instId: string; tdMode: "cross" | "isolated" | "cash";
   side: OrderSide; posSide?: PosSide; ordType: OrderType;
-  sz: string; px?: string; reduceOnly?: boolean;
+  sz: string; px?: string; reduceOnly?: boolean; tgtCcy?: "base_ccy" | "quote_ccy";
 }
 
 export interface OrderResult { ordId: string; clOrdId: string; sCode: string; sMsg: string; }
@@ -181,6 +225,49 @@ export async function placeOrder(req: OrderRequest): Promise<OrderResult | null>
   }
 }
 
+export async function placeBatchOrders(reqs: OrderRequest[]): Promise<OrderResult[] | null> {
+  try {
+    const body = JSON.stringify(reqs);
+    const data = await okxPrivateRequest<{ code: string; data: OrderResult[] }>(
+      "POST",
+      "/api/v5/trade/batch-orders",
+      body,
+      true
+    );
+    if (data.code === "0" && Array.isArray(data.data)) {
+      logTradeEvent("OKX", "batch_orders_ack", {
+        count: data.data.length,
+        requests: reqs.map((req) => ({
+          instId: req.instId,
+          tdMode: req.tdMode,
+          side: req.side,
+          posSide: req.posSide ?? null,
+          ordType: req.ordType,
+          sz: req.sz,
+          px: req.px ?? null,
+          reduceOnly: req.reduceOnly ?? null,
+          tgtCcy: req.tgtCcy ?? null,
+        })),
+        response: data,
+      });
+      return data.data;
+    }
+    logTradeEvent("OKX", "batch_orders_failed", {
+      count: reqs.length,
+      requests: reqs,
+      response: data,
+    });
+    return null;
+  } catch (e) {
+    logTradeEvent("OKX", "batch_orders_exception", {
+      count: reqs.length,
+      requests: reqs,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return null;
+  }
+}
+
 export async function placeLimitOrder(
   req: Omit<OrderRequest, "ordType"> & { px: string }
 ): Promise<OrderResult | null> {
@@ -193,6 +280,14 @@ export async function buyUp(instId = "BTC-USDT-SWAP", sz = "1") {
 
 export async function sellDown(instId = "BTC-USDT-SWAP", sz = "1") {
   return placeOrder({ instId, tdMode: "cross", side: "sell", posSide: "short", ordType: "market", sz });
+}
+
+export async function buySpot(instId = "BTC-USDT", sz = "0.01") {
+  return placeOrder({ instId, tdMode: "cash", side: "buy", ordType: "market", sz, tgtCcy: "base_ccy" });
+}
+
+export async function sellSpot(instId = "BTC-USDT", sz = "0.01") {
+  return placeOrder({ instId, tdMode: "cash", side: "sell", ordType: "market", sz, tgtCcy: "base_ccy" });
 }
 
 export async function placeGridBuyLong(instId = "BTC-USDT-SWAP", sz = "1", px = "") {
@@ -317,4 +412,19 @@ export async function getRecentFills(instId = "BTC-USDT-SWAP", limit = 10) {
     if (data.code === "0") return data.data ?? [];
     return [];
   } catch { return []; }
+}
+
+export async function getOrderDetails(instId: string, ordId: string) {
+  try {
+    const data = await okxPrivateRequest<{ code: string; data: any[] }>(
+      "GET",
+      `/api/v5/trade/order?instId=${encodeURIComponent(instId)}&ordId=${encodeURIComponent(ordId)}`,
+      "",
+      true
+    );
+    if (data.code === "0") return data.data?.[0] ?? null;
+    return null;
+  } catch {
+    return null;
+  }
 }

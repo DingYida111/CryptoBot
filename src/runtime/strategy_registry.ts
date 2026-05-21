@@ -3,6 +3,7 @@ import {
   ManagedStrategyRegistry,
   type ManagedStrategyDefinition,
 } from "./managed_strategies.js";
+import { LocalFundingArbitrageController } from "./local_funding_arbitrage_controller.js";
 import { OkxContractGridController } from "./okx_contract_grid_controller.js";
 
 export function createManagedStrategyRegistry(): ManagedStrategyRegistry {
@@ -19,6 +20,10 @@ function registerDefinition(
 ): void {
   if (definition.type === "okx_contract_grid") {
     registry.register(definition, () => new OkxContractGridController());
+    return;
+  }
+  if (definition.type === "local_funding_arbitrage") {
+    registry.register(definition, () => new LocalFundingArbitrageController());
     return;
   }
   registry.register(definition);
