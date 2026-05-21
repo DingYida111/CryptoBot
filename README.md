@@ -58,6 +58,7 @@ Supervisor observe-only runtime trace monitoring:
 
 Funding arbitrage diagnostics:
 
+- `npm run run:okx-connectivity` — 只读检查 OKX DNS、公共 API、模拟盘 account balance 连通性；不写 DB、不下单
 - `npm run run:funding-arb:validate` — 运行本地 funding arbitrage controller 的 shadow 或 paper 验证
 - `npm run run:okx-batch-funding-validate` — 直接通过 OKX `batch-orders` 做一笔官方接口对照验证
 - `npm run report:funding-arb -- 20` — 汇总最近 funding arb 机会、事件和 portfolio snapshots
