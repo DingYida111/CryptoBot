@@ -13,6 +13,7 @@
     "test:portfolio": "node --import tsx --test src/portfolio/**/*.test.ts",
     "test:carry": "node --import tsx --test src/carry/**/*.test.ts",
     "report:portfolio-shadow": "node --import tsx src/portfolio/run_shadow_report.ts",
+    "report:runtime-traces": "node --import tsx src/portfolio/run_runtime_trace_report.ts",
     "report:funding-arb": "node --import tsx src/runtime/run_funding_arb_report.ts",
     "run:funding-arb:validate": "node --import tsx src/runtime/run_funding_arbitrage_validation.ts",
     "run:okx-batch-funding-validate": "node --import tsx src/trade/run_okx_batch_funding_pair_validation.ts",

@@ -31,6 +31,7 @@ export interface RuntimeDecisionTraceReportRow {
   readonly source: string;
   readonly traceVersion: string;
   readonly createdAt: number | null;
+  readonly involvedInstrumentIds: readonly string[];
   readonly actualRoute: string;
   readonly shadowRoute: string | null;
   readonly actualDqContracts: number | null;
@@ -92,6 +93,67 @@ export interface RuntimeDecisionTraceSummary {
   }>;
 }
 
+export type RuntimeMessageCategory = "major_error" | "instrument_error" | "warning" | "info";
+
+export type RuntimeMessageScope = "system" | "instrument" | "strategy";
+
+export interface RuntimeTraceMessage {
+  readonly category: RuntimeMessageCategory;
+  readonly scope: RuntimeMessageScope;
+  readonly notify: boolean;
+  readonly code: RuntimeDecisionTraceAlertCode | "TRACE_OK";
+  readonly source: string;
+  readonly traceVersion: string;
+  readonly createdAt: number | null;
+  readonly affectedInstrumentIds: readonly string[];
+  readonly message: string;
+  readonly metrics: Readonly<Record<string, number | string | boolean | null>>;
+}
+
+export interface RuntimeTraceMessageSummary {
+  readonly totalMessages: number;
+  readonly majorErrorCount: number;
+  readonly instrumentErrorCount: number;
+  readonly warningCount: number;
+  readonly infoCount: number;
+  readonly notifyCount: number;
+  readonly byCategory: ReadonlyArray<{
+    readonly category: RuntimeMessageCategory;
+    readonly count: number;
+  }>;
+}
+
+export type RuntimeDecisionTraceGateStatus = "pass" | "warn" | "fail";
+
+export interface RuntimeDecisionTraceGateVerdict {
+  readonly status: RuntimeDecisionTraceGateStatus;
+  readonly source: string;
+  readonly traceVersion: string;
+  readonly createdAt: number | null;
+  readonly actualRoute: string;
+  readonly shadowRoute: string | null;
+  readonly alertCount: number;
+  readonly warningCount: number;
+  readonly criticalCount: number;
+  readonly alertCodes: readonly RuntimeDecisionTraceAlertCode[];
+}
+
+export interface RuntimeDecisionTraceHealthSummary {
+  readonly status: RuntimeDecisionTraceGateStatus;
+  readonly totalTraces: number;
+  readonly passCount: number;
+  readonly warnCount: number;
+  readonly failCount: number;
+  readonly bySource: ReadonlyArray<{
+    readonly source: string;
+    readonly status: RuntimeDecisionTraceGateStatus;
+    readonly totalTraces: number;
+    readonly passCount: number;
+    readonly warnCount: number;
+    readonly failCount: number;
+  }>;
+}
+
 function rate(numerator: number, denominator: number): number {
   if (denominator <= 0) return 0;
   return numerator / denominator;
@@ -120,6 +182,21 @@ function residualNetQuantity(decision: RuntimeDecisionTraceDecision | null): num
 function packageResidualRows(decision: RuntimeDecisionTraceDecision | null): number | null {
   if (!decision?.packageLedger) return null;
   return decision.packageLedger.residualSummary.rowCount;
+}
+
+function involvedInstrumentIds(decision: RuntimeDecisionTraceDecision | null): readonly string[] {
+  if (!decision) return [];
+  if (decision.packageLedger) {
+    return decision.packageLedger.legs.map((leg) => leg.instrumentId);
+  }
+  if (decision.tradeLedger) {
+    return [decision.tradeLedger.instrumentId];
+  }
+  return [];
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)].sort();
 }
 
 function dqDiffPct(actualDq: number | null, shadowDq: number | null): number | null {
@@ -153,6 +230,10 @@ export function buildRuntimeDecisionTraceReportRow(input: {
     source: input.trace.source,
     traceVersion: input.trace.traceVersion,
     createdAt: input.createdAt ?? null,
+    involvedInstrumentIds: uniqueStrings([
+      ...involvedInstrumentIds(input.trace.actualDecision),
+      ...involvedInstrumentIds(input.trace.shadowDecision),
+    ]),
     actualRoute: input.trace.actualDecision.route,
     shadowRoute: input.trace.shadowDecision?.route ?? null,
     actualDqContracts: actualDq,
@@ -270,6 +351,150 @@ export function buildRuntimeDecisionTraceAlerts(
   return alerts;
 }
 
+function categoryForAlert(alert: RuntimeDecisionTraceAlert): RuntimeMessageCategory {
+  if (alert.code === "ROUTE_MISMATCH" || alert.code === "BASIS_MISMATCH") {
+    return "instrument_error";
+  }
+  return "warning";
+}
+
+function scopeForCategory(category: RuntimeMessageCategory): RuntimeMessageScope {
+  if (category === "major_error") return "system";
+  if (category === "instrument_error") return "instrument";
+  return "strategy";
+}
+
+function shouldNotify(category: RuntimeMessageCategory): boolean {
+  return category === "major_error" || category === "instrument_error";
+}
+
+export function buildRuntimeTraceMessages(
+  row: RuntimeDecisionTraceReportRow,
+  thresholds: RuntimeDecisionTraceAlertThresholds = DEFAULT_RUNTIME_TRACE_ALERT_THRESHOLDS,
+): RuntimeTraceMessage[] {
+  const alerts = buildRuntimeDecisionTraceAlerts(row, thresholds);
+  if (alerts.length === 0) {
+    return [{
+      category: "info",
+      scope: "strategy",
+      notify: false,
+      code: "TRACE_OK",
+      source: row.source,
+      traceVersion: row.traceVersion,
+      createdAt: row.createdAt,
+      affectedInstrumentIds: row.involvedInstrumentIds,
+      message: "Runtime trace passed shadow gating thresholds.",
+      metrics: {
+        actualRoute: row.actualRoute,
+        shadowRoute: row.shadowRoute,
+      },
+    }];
+  }
+
+  return alerts.map((alert) => {
+    const category = categoryForAlert(alert);
+    return {
+      category,
+      scope: scopeForCategory(category),
+      notify: shouldNotify(category),
+      code: alert.code,
+      source: alert.source,
+      traceVersion: alert.traceVersion,
+      createdAt: alert.createdAt,
+      affectedInstrumentIds: row.involvedInstrumentIds,
+      message: alert.message,
+      metrics: alert.metrics,
+    };
+  });
+}
+
+export function summarizeRuntimeTraceMessages(
+  messages: readonly RuntimeTraceMessage[],
+): RuntimeTraceMessageSummary {
+  const counts = new Map<RuntimeMessageCategory, number>();
+  for (const message of messages) {
+    counts.set(message.category, (counts.get(message.category) ?? 0) + 1);
+  }
+  return {
+    totalMessages: messages.length,
+    majorErrorCount: counts.get("major_error") ?? 0,
+    instrumentErrorCount: counts.get("instrument_error") ?? 0,
+    warningCount: counts.get("warning") ?? 0,
+    infoCount: counts.get("info") ?? 0,
+    notifyCount: messages.filter((message) => message.notify).length,
+    byCategory: [...counts.entries()]
+      .map(([category, count]) => ({ category, count }))
+      .sort((a, b) => b.count - a.count),
+  };
+}
+
+function statusRank(status: RuntimeDecisionTraceGateStatus): number {
+  if (status === "fail") return 2;
+  if (status === "warn") return 1;
+  return 0;
+}
+
+function maxStatus(statuses: readonly RuntimeDecisionTraceGateStatus[]): RuntimeDecisionTraceGateStatus {
+  return statuses.reduce<RuntimeDecisionTraceGateStatus>((current, next) =>
+    statusRank(next) > statusRank(current) ? next : current
+  , "pass");
+}
+
+export function buildRuntimeDecisionTraceGateVerdict(
+  row: RuntimeDecisionTraceReportRow,
+  thresholds: RuntimeDecisionTraceAlertThresholds = DEFAULT_RUNTIME_TRACE_ALERT_THRESHOLDS,
+): RuntimeDecisionTraceGateVerdict {
+  const alerts = buildRuntimeDecisionTraceAlerts(row, thresholds);
+  const criticalCount = alerts.filter((alert) => alert.severity === "critical").length;
+  const warningCount = alerts.filter((alert) => alert.severity === "warning").length;
+  return {
+    status: criticalCount > 0 ? "fail" : (warningCount > 0 ? "warn" : "pass"),
+    source: row.source,
+    traceVersion: row.traceVersion,
+    createdAt: row.createdAt,
+    actualRoute: row.actualRoute,
+    shadowRoute: row.shadowRoute,
+    alertCount: alerts.length,
+    warningCount,
+    criticalCount,
+    alertCodes: alerts.map((alert) => alert.code),
+  };
+}
+
+export function summarizeRuntimeDecisionTraceHealth(
+  rows: readonly RuntimeDecisionTraceReportRow[],
+  thresholds: RuntimeDecisionTraceAlertThresholds = DEFAULT_RUNTIME_TRACE_ALERT_THRESHOLDS,
+): RuntimeDecisionTraceHealthSummary {
+  const verdicts = rows.map((row) => buildRuntimeDecisionTraceGateVerdict(row, thresholds));
+  const bySource = new Map<string, RuntimeDecisionTraceGateVerdict[]>();
+  for (const verdict of verdicts) {
+    const existing = bySource.get(verdict.source);
+    if (existing) {
+      existing.push(verdict);
+    } else {
+      bySource.set(verdict.source, [verdict]);
+    }
+  }
+
+  return {
+    status: maxStatus(verdicts.map((verdict) => verdict.status)),
+    totalTraces: verdicts.length,
+    passCount: verdicts.filter((verdict) => verdict.status === "pass").length,
+    warnCount: verdicts.filter((verdict) => verdict.status === "warn").length,
+    failCount: verdicts.filter((verdict) => verdict.status === "fail").length,
+    bySource: [...bySource.entries()]
+      .map(([source, sourceVerdicts]) => ({
+        source,
+        status: maxStatus(sourceVerdicts.map((verdict) => verdict.status)),
+        totalTraces: sourceVerdicts.length,
+        passCount: sourceVerdicts.filter((verdict) => verdict.status === "pass").length,
+        warnCount: sourceVerdicts.filter((verdict) => verdict.status === "warn").length,
+        failCount: sourceVerdicts.filter((verdict) => verdict.status === "fail").length,
+      }))
+      .sort((a, b) => statusRank(b.status) - statusRank(a.status) || b.totalTraces - a.totalTraces),
+  };
+}
+
 export function summarizeRuntimeDecisionTraceRows(
   rows: readonly RuntimeDecisionTraceReportRow[],
   thresholds: RuntimeDecisionTraceAlertThresholds = DEFAULT_RUNTIME_TRACE_ALERT_THRESHOLDS,
@@ -351,12 +576,23 @@ export function summarizeRuntimeDecisionTraces(
 ): {
   readonly rows: RuntimeDecisionTraceReportRow[];
   readonly summary: RuntimeDecisionTraceSummary;
+  readonly health: RuntimeDecisionTraceHealthSummary;
+  readonly verdicts: RuntimeDecisionTraceGateVerdict[];
   readonly alerts: RuntimeDecisionTraceAlert[];
+  readonly messages: RuntimeTraceMessage[];
+  readonly messageSummary: RuntimeTraceMessageSummary;
+  readonly notifyMessages: RuntimeTraceMessage[];
 } {
   const rows = inputs.map((input) => buildRuntimeDecisionTraceReportRow(input));
+  const messages = rows.flatMap((row) => buildRuntimeTraceMessages(row, thresholds));
   return {
     rows,
     summary: summarizeRuntimeDecisionTraceRows(rows, thresholds),
+    health: summarizeRuntimeDecisionTraceHealth(rows, thresholds),
+    verdicts: rows.map((row) => buildRuntimeDecisionTraceGateVerdict(row, thresholds)),
     alerts: rows.flatMap((row) => buildRuntimeDecisionTraceAlerts(row, thresholds)),
+    messages,
+    messageSummary: summarizeRuntimeTraceMessages(messages),
+    notifyMessages: messages.filter((message) => message.notify),
   };
 }

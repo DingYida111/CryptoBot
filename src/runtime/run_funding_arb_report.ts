@@ -273,6 +273,11 @@ console.log(JSON.stringify({
   recentSnapshotConsistency,
   snapshotConsistencySummary,
   traceSummary: traceReport.summary,
+  traceHealth: traceReport.health,
+  recentTraceVerdicts: traceReport.verdicts.slice(0, 20),
+  messageSummary: traceReport.messageSummary,
+  notifyMessages: traceReport.notifyMessages.slice(0, 20),
+  recentMessages: traceReport.messages.slice(0, 20),
   recentTraceAlerts: traceReport.alerts.slice(0, 20),
   recentTraceRows: traceReport.rows.slice(0, 10),
 }, null, 2));
