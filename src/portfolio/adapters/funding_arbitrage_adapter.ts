@@ -38,11 +38,20 @@ export function fundingArbPositionsToInstrumentPositions(input: {
 export function buildPortfolioStateFromFundingArb(
   input: BuildFundingArbPortfolioStateInput
 ): PortfolioState {
-  return buildPortfolioState({
+  const portfolioState = buildPortfolioState({
     asOfMs: input.asOfMs,
     instrumentPositions: input.instrumentPositions,
     securityExposures: input.securityExposures,
     cashBalances: input.cashBalances,
     metadata: input.metadata,
   });
+  return {
+    ...portfolioState,
+    metadata: {
+      ...portfolioState.metadata,
+      residualRowCount: portfolioState.residualSummary.rowCount,
+      residualGrossQuantity: portfolioState.residualSummary.grossQuantity,
+      residualNetQuantity: portfolioState.residualSummary.netQuantity,
+    },
+  };
 }

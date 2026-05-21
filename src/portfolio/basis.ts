@@ -1,5 +1,11 @@
 import { asStrategyBasisId } from "./ids.js";
-import type { BasisDecomposition, ResidualPosition, StrategyBasisSpec } from "./portfolio_types.js";
+import type {
+  BasisDecomposition,
+  DecisionRoute,
+  ResidualPosition,
+  StrategyBasisSpec,
+  TradeLedgerEntry,
+} from "./portfolio_types.js";
 import { asResidualReasonCode } from "./ids.js";
 import { OKX_BTC_USDT_SWAP } from "./instrument_spec.js";
 
@@ -52,5 +58,30 @@ export function toResidualPosition(dqContracts: number, reasonCode: string): Res
     instrumentId: OKX_BTC_USDT_SWAP,
     quantity: dqContracts,
     reasonCode: asResidualReasonCode(reasonCode),
+  };
+}
+
+export function basisExplainsTradeExactly(
+  dqContracts: number,
+  decomposition: BasisDecomposition,
+  tolerance = 1e-9,
+): boolean {
+  return Math.abs(dqContracts - decomposition.basisDqContracts - decomposition.residualDqContracts) <= tolerance;
+}
+
+export function buildTradeLedgerEntry(
+  route: DecisionRoute,
+  dqContracts: number,
+  decomposition: BasisDecomposition,
+): TradeLedgerEntry {
+  return {
+    route,
+    dqContracts,
+    basisId: decomposition.basisId,
+    strategyWeight: decomposition.strategyWeight,
+    basisDqContracts: decomposition.basisDqContracts,
+    residualDqContracts: decomposition.residualDqContracts,
+    residualReasonCode: decomposition.residualReasonCode,
+    explainsDqExactly: basisExplainsTradeExactly(dqContracts, decomposition),
   };
 }

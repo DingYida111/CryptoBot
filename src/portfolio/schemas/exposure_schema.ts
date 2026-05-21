@@ -18,6 +18,14 @@ export const ResidualPositionSchema = z.object({
   reasonCode: ResidualReasonCodeSchema,
 });
 
+export const ResidualLedgerSummarySchema = z.object({
+  rowCount: z.number().int().nonnegative(),
+  grossQuantity: z.number(),
+  netQuantity: z.number(),
+  byInstrument: z.record(InstrumentIdSchema, z.number()),
+  byReasonCode: z.record(ResidualReasonCodeSchema, z.number()),
+});
+
 export const BasisDecompositionSchema = z.object({
   basisId: StrategyBasisIdSchema.nullable(),
   strategyWeight: z.number(),
@@ -32,7 +40,32 @@ export const PortfolioStateSchema = z.object({
   securityExposures: z.record(SecurityIdSchema, z.number()),
   cashBalances: z.record(z.string(), z.number()),
   residualPositions: z.record(InstrumentIdSchema, z.number()),
+  residualLedger: z.array(ResidualPositionSchema),
+  residualSummary: ResidualLedgerSummarySchema,
   metadata: z.record(z.union([z.string(), z.number(), z.boolean()])),
+});
+
+export const TradeLedgerEntrySchema = z.object({
+  route: z.enum([
+    "noop",
+    "open_long",
+    "open_short",
+    "close_long",
+    "close_short",
+    "partial_close_long",
+    "partial_close_short",
+    "grid_seed",
+    "grid_exit",
+    "grid_hold",
+    "residual",
+  ]),
+  dqContracts: z.number(),
+  basisId: StrategyBasisIdSchema.nullable(),
+  strategyWeight: z.number(),
+  basisDqContracts: z.number(),
+  residualDqContracts: z.number(),
+  residualReasonCode: ResidualReasonCodeSchema.nullable(),
+  explainsDqExactly: z.boolean(),
 });
 
 export const OptimizationRequestSchema = z.object({

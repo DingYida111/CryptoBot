@@ -30,14 +30,14 @@ import type { Candle } from "../monitor/binance.js";
 import { insertPortfolioResidual, insertPortfolioShadowLog, insertPortfolioSnapshot } from "../monitor/storage.js";
 import { chopGridMetadata } from "../portfolio/adapters/chop_grid_adapter.js";
 import { buildPortfolioStateFromRunner, okxPositionsToInstrumentPositions } from "../portfolio/adapters/strategy_runner_adapter.js";
-import { STRATEGY_BASIS_SPECS, decomposeTradeIncrement } from "../portfolio/basis.js";
+import { STRATEGY_BASIS_SPECS, buildTradeLedgerEntry, decomposeTradeIncrement } from "../portfolio/basis.js";
 import { computeExposure, toInstrumentSpecMap } from "../portfolio/exposure.js";
 import { buildBtcSwapInstrumentSpecFromMeta, OKX_BTC_USDT_SWAP } from "../portfolio/instrument_spec.js";
 import { buildOptimizationRequest } from "../portfolio/optimizer_request.js";
 import { runOptimizerStub } from "../portfolio/optimizer_stub.js";
 import type { DecisionIntent } from "../portfolio/portfolio_types.js";
 import { BTC_DELTA, BTC_PERP_FUNDING_OKX } from "../portfolio/security_spec.js";
-import { buildResidualPosition } from "../portfolio/residual.js";
+import { buildResidualPositionFromCode, summarizeResidualLedger } from "../portfolio/residual.js";
 import { PORTFOLIO_SHADOW_VERSION } from "../portfolio/version.js";
 
 dotenvConfig();
@@ -458,20 +458,42 @@ async function persistPortfolioArtifacts(
   const exposures = computeExposure(instrumentPositions, toInstrumentSpecMap([instrumentSpec]));
   const now = Date.now();
   const gridSnapshot = getChopGridSnapshot();
+  const actualResidualPositions = actualIntent.basis.residualDqContracts === 0
+    ? []
+    : [
+        buildResidualPositionFromCode(
+          OKX_BTC_USDT_SWAP,
+          actualIntent.basis.residualDqContracts,
+          actualIntent.basis.residualReasonCode ?? "UNROUTED_DECISION"
+        ),
+      ];
+  const shadowResidualPositions = shadowIntent.basis.residualDqContracts === 0
+    ? []
+    : [
+        buildResidualPositionFromCode(
+          OKX_BTC_USDT_SWAP,
+          shadowIntent.basis.residualDqContracts,
+          shadowIntent.basis.residualReasonCode ?? "UNROUTED_DECISION"
+        ),
+      ];
+  const actualTradeLedger = buildTradeLedgerEntry(
+    actualIntent.route,
+    actualIntent.proposedDqContracts,
+    actualIntent.basis,
+  );
+  const shadowTradeLedger = buildTradeLedgerEntry(
+    shadowIntent.route,
+    shadowIntent.proposedDqContracts,
+    shadowIntent.basis,
+  );
+  const actualResidualSummary = summarizeResidualLedger(actualResidualPositions);
+  const shadowResidualSummary = summarizeResidualLedger(shadowResidualPositions);
   const portfolioState = buildPortfolioStateFromRunner({
     asOfMs: now,
     instrumentPositions,
     securityExposures: exposures,
     cashBalances: cachedBalance === null ? {} : { USDT: cachedBalance },
-    residualPositions: shadowIntent.basis.residualDqContracts === 0
-      ? []
-      : [
-          buildResidualPosition(
-            OKX_BTC_USDT_SWAP,
-            shadowIntent.basis.residualDqContracts,
-            "UNROUTED_DECISION"
-          ),
-        ],
+    residualPositions: actualResidualPositions,
     signalDirection: signal?.direction ?? "none",
     signalRegime: signal?.regime ?? "NONE",
     btcPrice: btcPrice ?? 0,
@@ -510,6 +532,10 @@ async function persistPortfolioArtifacts(
     rawJson: JSON.stringify({
       portfolioState,
       optimizationRequest,
+      actualTradeLedger,
+      shadowTradeLedger,
+      actualResidualSummary,
+      shadowResidualSummary,
     }),
     createdAt: now,
   });
@@ -534,6 +560,10 @@ async function persistPortfolioArtifacts(
     rawJson: JSON.stringify({
       actualIntent,
       shadowIntent,
+      actualTradeLedger,
+      shadowTradeLedger,
+      actualResidualSummary,
+      shadowResidualSummary,
       optimizationRequest,
       signal: signal ? {
         direction: signal.direction,
@@ -546,15 +576,35 @@ async function persistPortfolioArtifacts(
     createdAt: now,
   });
 
+  if (actualIntent.basis.residualDqContracts !== 0) {
+    insertPortfolioResidual({
+      source: "strategy_runner_actual",
+      shadowVersion: PORTFOLIO_SHADOW_VERSION,
+      instId: "BTC-USDT-SWAP",
+      quantity: actualIntent.basis.residualDqContracts,
+      reasonCode: actualIntent.basis.residualReasonCode ?? "UNROUTED_DECISION",
+      rawJson: JSON.stringify({
+        actualIntent,
+        actualTradeLedger,
+        signal: signal ? {
+          direction: signal.direction,
+          regime: signal.regime,
+        } : null,
+      }),
+      createdAt: now,
+    });
+  }
+
   if (shadowIntent.basis.residualDqContracts !== 0) {
     insertPortfolioResidual({
-      source: "strategy_runner",
+      source: "strategy_runner_shadow",
       shadowVersion: PORTFOLIO_SHADOW_VERSION,
       instId: "BTC-USDT-SWAP",
       quantity: shadowIntent.basis.residualDqContracts,
       reasonCode: shadowIntent.basis.residualReasonCode ?? "UNROUTED_DECISION",
       rawJson: JSON.stringify({
         shadowIntent,
+        shadowTradeLedger,
         signal: signal ? {
           direction: signal.direction,
           regime: signal.regime,

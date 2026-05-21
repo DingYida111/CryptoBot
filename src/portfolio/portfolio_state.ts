@@ -1,4 +1,5 @@
 import type { InstrumentPosition, PortfolioState, ResidualPosition, SecurityExposure } from "./portfolio_types.js";
+import { collapseResidualPositions, summarizeResidualLedger } from "./residual.js";
 
 function toReadonlyNumberRecord<T extends string>(rows: ReadonlyArray<{ key: T; value: number }>): Readonly<Record<T, number>> {
   const out = {} as Record<T, number>;
@@ -22,9 +23,9 @@ export function buildPortfolioState(input: {
   const securityExposures = toReadonlyNumberRecord(
     input.securityExposures.map((row) => ({ key: row.securityId, value: row.quantity }))
   );
-  const residualPositions = toReadonlyNumberRecord(
-    (input.residualPositions ?? []).map((row) => ({ key: row.instrumentId, value: row.quantity }))
-  );
+  const residualLedger = collapseResidualPositions(input.residualPositions ?? []);
+  const residualSummary = summarizeResidualLedger(residualLedger);
+  const residualPositions = residualSummary.byInstrument;
 
   return {
     asOfMs: input.asOfMs,
@@ -32,6 +33,8 @@ export function buildPortfolioState(input: {
     securityExposures,
     cashBalances: input.cashBalances ?? {},
     residualPositions,
+    residualLedger,
+    residualSummary,
     metadata: input.metadata ?? {},
   };
 }

@@ -44,7 +44,7 @@ export interface BuildRunnerPortfolioStateInput {
 }
 
 export function buildPortfolioStateFromRunner(input: BuildRunnerPortfolioStateInput): PortfolioState {
-  return buildPortfolioState({
+  const portfolioState = buildPortfolioState({
     asOfMs: input.asOfMs,
     instrumentPositions: input.instrumentPositions,
     securityExposures: input.securityExposures,
@@ -65,4 +65,13 @@ export function buildPortfolioStateFromRunner(input: BuildRunnerPortfolioStateIn
       ...(input.gridMetadata ?? {}),
     },
   });
+  return {
+    ...portfolioState,
+    metadata: {
+      ...portfolioState.metadata,
+      residualRowCount: portfolioState.residualSummary.rowCount,
+      residualGrossQuantity: portfolioState.residualSummary.grossQuantity,
+      residualNetQuantity: portfolioState.residualSummary.netQuantity,
+    },
+  };
 }

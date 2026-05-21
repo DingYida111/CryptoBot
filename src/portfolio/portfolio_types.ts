@@ -75,6 +75,14 @@ export interface ResidualPosition {
   readonly reasonCode: ResidualReasonCode;
 }
 
+export interface ResidualLedgerSummary {
+  readonly rowCount: number;
+  readonly grossQuantity: number;
+  readonly netQuantity: number;
+  readonly byInstrument: Readonly<Record<InstrumentId, number>>;
+  readonly byReasonCode: Readonly<Record<ResidualReasonCode, number>>;
+}
+
 export interface BasisDecomposition {
   readonly basisId: StrategyBasisId | null;
   readonly strategyWeight: number;
@@ -89,7 +97,33 @@ export interface PortfolioState {
   readonly securityExposures: Readonly<Record<SecurityId, number>>;
   readonly cashBalances: Readonly<Record<string, number>>;
   readonly residualPositions: Readonly<Record<InstrumentId, number>>;
+  readonly residualLedger: readonly ResidualPosition[];
+  readonly residualSummary: ResidualLedgerSummary;
   readonly metadata: Readonly<Record<string, string | number | boolean>>;
+}
+
+export type DecisionRoute =
+  | "noop"
+  | "open_long"
+  | "open_short"
+  | "close_long"
+  | "close_short"
+  | "partial_close_long"
+  | "partial_close_short"
+  | "grid_seed"
+  | "grid_exit"
+  | "grid_hold"
+  | "residual";
+
+export interface TradeLedgerEntry {
+  readonly route: DecisionRoute;
+  readonly dqContracts: number;
+  readonly basisId: StrategyBasisId | null;
+  readonly strategyWeight: number;
+  readonly basisDqContracts: number;
+  readonly residualDqContracts: number;
+  readonly residualReasonCode: ResidualReasonCode | null;
+  readonly explainsDqExactly: boolean;
 }
 
 export interface FundingArbPortfolioMetadata extends Readonly<Record<string, string | number | boolean>> {
@@ -127,18 +161,7 @@ export interface OptimizationRequest {
 
 export interface DecisionIntent {
   readonly mode: "hold" | "trade" | "grid";
-  readonly route:
-    | "noop"
-    | "open_long"
-    | "open_short"
-    | "close_long"
-    | "close_short"
-    | "partial_close_long"
-    | "partial_close_short"
-    | "grid_seed"
-    | "grid_exit"
-    | "grid_hold"
-    | "residual";
+  readonly route: DecisionRoute;
   readonly proposedDqContracts: number;
   readonly basis: BasisDecomposition;
   readonly reason: string;
