@@ -233,6 +233,32 @@ function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_funding_arb_events_instance_created_at
       ON funding_arb_events(instance_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS runtime_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      surface TEXT NOT NULL,
+      surface_row_id INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      category TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      source TEXT NOT NULL,
+      trace_version TEXT,
+      affected_instrument_ids_json TEXT NOT NULL,
+      notify INTEGER NOT NULL,
+      message TEXT NOT NULL,
+      metrics_json TEXT NOT NULL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      emitted_at INTEGER NOT NULL,
+      UNIQUE(surface, surface_row_id, code)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_messages_created_at
+      ON runtime_messages(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_runtime_messages_category_created_at
+      ON runtime_messages(category, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_runtime_messages_notify_created_at
+      ON runtime_messages(notify, created_at DESC);
   `);
 
   const columns = new Set(
@@ -429,6 +455,23 @@ export interface FundingArbEventRecord {
   swapContracts?: number | null;
   rawJson: string;
   createdAt: number;
+}
+
+export interface RuntimeMessageRecord {
+  surface: string;
+  surfaceRowId: number;
+  code: string;
+  category: string;
+  scope: string;
+  source: string;
+  traceVersion?: string | null;
+  affectedInstrumentIdsJson: string;
+  notify: boolean;
+  message: string;
+  metricsJson: string;
+  rawJson: string;
+  createdAt: number;
+  emittedAt: number;
 }
 
 export function insertTick(tick: Tick): void {
@@ -801,6 +844,33 @@ export function insertFundingArbEvent(record: FundingArbEventRecord): number {
     record.createdAt
   );
   return result.lastInsertRowid as number;
+}
+
+export function insertRuntimeMessage(record: RuntimeMessageRecord): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO runtime_messages (
+      surface, surface_row_id, code, category, scope, source, trace_version,
+      affected_instrument_ids_json, notify, message, metrics_json, raw_json,
+      created_at, emitted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.surface,
+    record.surfaceRowId,
+    record.code,
+    record.category,
+    record.scope,
+    record.source,
+    record.traceVersion ?? null,
+    record.affectedInstrumentIdsJson,
+    record.notify ? 1 : 0,
+    record.message,
+    record.metricsJson,
+    record.rawJson,
+    record.createdAt,
+    record.emittedAt,
+  );
+  return result.changes > 0;
 }
 
 function rowToTick(row: any): Tick {

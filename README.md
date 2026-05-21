@@ -39,6 +39,10 @@ Portfolio algebra shadow diagnostics:
 - `npm run report:portfolio-shadow -- 50` — 默认读取最新 `shadow_version` 的最近 50 条 shadow 行
 - `npm run report:portfolio-shadow -- 50 --all` — 跨版本查看历史
 - `npm run report:portfolio-shadow -- 50 --version portfolio-shadow-v1.1` — 指定版本过滤
+- `npm run report:runtime-traces -- 50` — 统一读取 `portfolio_shadow_log` 与 `portfolio_snapshots` 中的 RuntimeDecisionTrace
+- `npm run report:runtime-traces -- 50 --persist-messages` — 将分类后的 `info / warning / instrument_error / major_error` 消息写入 `runtime_messages`
+- `npm run report:runtime-traces -- 50 --notify-dry-run` — 打印将要通知的 error 类消息，不发送外部请求
+- `RUNTIME_NOTIFY_WEBHOOK_URL=https://... npm run report:runtime-traces -- 50 --notify` — 发送 `notify=true` 的消息到 webhook
 
 Funding arbitrage diagnostics:
 
@@ -439,6 +443,7 @@ Funding arbitrage 示例：
 - `funding_arb_opportunities`
 - `funding_arb_events`
 - `portfolio_snapshots`（`source = local_funding_arbitrage`）
+- `runtime_messages`
 
 这些表的目标是让分析建立在结构化数据上，而不是建立在日志文本上。
 
