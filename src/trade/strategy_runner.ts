@@ -477,11 +477,13 @@ async function persistPortfolioArtifacts(
         ),
       ];
   const actualTradeLedger = buildTradeLedgerEntry(
+    OKX_BTC_USDT_SWAP,
     actualIntent.route,
     actualIntent.proposedDqContracts,
     actualIntent.basis,
   );
   const shadowTradeLedger = buildTradeLedgerEntry(
+    OKX_BTC_USDT_SWAP,
     shadowIntent.route,
     shadowIntent.proposedDqContracts,
     shadowIntent.basis,

@@ -1,10 +1,11 @@
 import { computeFundingArbitrageOpportunity, type FundingArbitrageConfig, type FundingArbitrageOpportunity } from "../carry/funding_arbitrage.js";
 import { fetchFundingRate, fetchInstrumentMeta, fetchTicker } from "../monitor/okx.js";
-import { insertFundingArbEvent, insertFundingArbOpportunity, insertPortfolioSnapshot } from "../monitor/storage.js";
+import { insertFundingArbEvent, insertFundingArbOpportunity, insertPortfolioResidual, insertPortfolioSnapshot } from "../monitor/storage.js";
 import { computeExposure, toInstrumentSpecMap } from "../portfolio/exposure.js";
 import { buildBtcSpotInstrumentSpecFromMeta, buildBtcSwapInstrumentSpecFromMeta } from "../portfolio/instrument_spec.js";
 import { BTC_DELTA, BTC_PERP_FUNDING_OKX } from "../portfolio/security_spec.js";
 import { buildPortfolioStateFromFundingArb, fundingArbPositionsToInstrumentPositions } from "../portfolio/adapters/funding_arbitrage_adapter.js";
+import { buildFundingCarryPackageLedger } from "../portfolio/basis.js";
 import {
   buySpot,
   getAssetBalance,
@@ -138,6 +139,25 @@ function toPortfolioTimestamp(value: number | null): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function recordTradePackageResiduals(input: {
+  readonly source: string;
+  readonly packageLedger: ReturnType<typeof buildFundingCarryPackageLedger>;
+  readonly rawJson: string;
+  readonly createdAt: number;
+}): void {
+  for (const row of input.packageLedger.residualLedger) {
+    insertPortfolioResidual({
+      source: input.source,
+      shadowVersion: FUNDING_ARB_PORTFOLIO_VERSION,
+      instId: row.instrumentId,
+      quantity: row.quantity,
+      reasonCode: row.reasonCode,
+      rawJson: input.rawJson,
+      createdAt: input.createdAt,
+    });
+  }
+}
+
 export class LocalFundingArbitrageController implements ManagedStrategyController {
   readonly definition = DEFINITION;
   private readonly states = new Map<string, FundingRuntimeState>();
@@ -181,6 +201,7 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
     spotMetaLotSz: number;
     swapMetaCtVal: number;
     currentSpotBtc: number;
+    currentSpotAvailBtc: number;
     currentShortContracts: number;
     currentShortBtc: number;
     netDeltaBtc: number;
@@ -205,6 +226,17 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
       instrumentPositions,
       toInstrumentSpecMap([spotSpec, swapSpec]),
     );
+    const activePackageLedger = input.state.packageState
+      ? buildFundingCarryPackageLedger({
+          spotDqBtc: input.currentSpotAvailBtc - input.state.packageState.preEntrySpotAvailBtc,
+          swapDqContracts: -(input.currentShortContracts - input.state.packageState.preEntryShortContracts),
+          contractMultiplier: input.swapMetaCtVal,
+          spotRoute: "open_long",
+          swapRoute: "open_short",
+          spotResidualReasonCode: "FUNDING_ARB_ACTIVE_SPOT_RESIDUAL",
+          swapResidualReasonCode: "FUNDING_ARB_ACTIVE_SWAP_RESIDUAL",
+        })
+      : null;
     const portfolioState = buildPortfolioStateFromFundingArb({
       asOfMs: input.now,
       instrumentPositions,
@@ -250,6 +282,7 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
         portfolioState,
         opportunity: input.opportunity,
         packageState: input.state.packageState,
+        activePackageLedger,
       }),
       createdAt: input.now,
     });
@@ -414,6 +447,18 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
             currentSpotAvailBtc - state.packageState.preEntrySpotAvailBtc,
           ) - 0.00000001,
         );
+        const unwindTradePackageLedger = buildFundingCarryPackageLedger({
+          spotDqBtc: -spotSellQty,
+          swapDqContracts: Math.max(
+            0,
+            currentShortContracts - state.packageState.preEntryShortContracts,
+          ),
+          contractMultiplier: swapCtVal,
+          spotRoute: "close_long",
+          swapRoute: "close_short",
+          spotResidualReasonCode: "FUNDING_ARB_UNWIND_SPOT_RESIDUAL",
+          swapResidualReasonCode: "FUNDING_ARB_UNWIND_SWAP_RESIDUAL",
+        });
         if (spotSellQty > 0) {
           await sellSpot(state.packageState.spotInstId, spotSellQty.toFixed(8));
         }
@@ -428,7 +473,19 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
           fundingPassed,
           exceededHold,
           hedgeBroken,
+          unwindTradePackageLedger,
         }, state.packageState);
+        recordTradePackageResiduals({
+          source: "local_funding_arbitrage_unwind",
+          packageLedger: unwindTradePackageLedger,
+          rawJson: JSON.stringify({
+            fundingPassed,
+            exceededHold,
+            hedgeBroken,
+            unwindTradePackageLedger,
+          }),
+          createdAt: now,
+        });
         state.packageState = null;
         state.phase = "completed";
         state.validationCycleCompleted = true;
@@ -459,6 +516,15 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
               perpResult,
             }, null);
           } else {
+            const entryTradePackageLedger = buildFundingCarryPackageLedger({
+              spotDqBtc: opportunity.candidateBtcSize,
+              swapDqContracts: -opportunity.candidateSwapContracts,
+              contractMultiplier: swapCtVal,
+              spotRoute: "open_long",
+              swapRoute: "open_short",
+              spotResidualReasonCode: "FUNDING_ARB_ENTRY_SPOT_RESIDUAL",
+              swapResidualReasonCode: "FUNDING_ARB_ENTRY_SWAP_RESIDUAL",
+            });
             state.packageState = {
               spotInstId,
               perpInstId,
@@ -481,7 +547,19 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
               opportunity,
               spotResult,
               perpResult,
+              entryTradePackageLedger,
             }, state.packageState);
+            recordTradePackageResiduals({
+              source: "local_funding_arbitrage_entry",
+              packageLedger: entryTradePackageLedger,
+              rawJson: JSON.stringify({
+                opportunity,
+                spotResult,
+                perpResult,
+                entryTradePackageLedger,
+              }),
+              createdAt: now,
+            });
             await refreshLiveState();
           }
         }
@@ -499,6 +577,7 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
       spotMetaLotSz: spotMeta.lotSz,
       swapMetaCtVal: swapCtVal,
       currentSpotBtc,
+      currentSpotAvailBtc,
       currentShortContracts,
       currentShortBtc,
       netDeltaBtc,

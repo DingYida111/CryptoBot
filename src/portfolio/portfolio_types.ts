@@ -116,14 +116,24 @@ export type DecisionRoute =
   | "residual";
 
 export interface TradeLedgerEntry {
+  readonly instrumentId: InstrumentId;
   readonly route: DecisionRoute;
-  readonly dqContracts: number;
+  readonly dq: number;
   readonly basisId: StrategyBasisId | null;
   readonly strategyWeight: number;
-  readonly basisDqContracts: number;
-  readonly residualDqContracts: number;
+  readonly basisDq: number;
+  readonly residualDq: number;
   readonly residualReasonCode: ResidualReasonCode | null;
   readonly explainsDqExactly: boolean;
+}
+
+export interface TradePackageLedger {
+  readonly basisId: StrategyBasisId | null;
+  readonly strategyWeight: number;
+  readonly legs: readonly TradeLedgerEntry[];
+  readonly residualLedger: readonly ResidualPosition[];
+  readonly residualSummary: ResidualLedgerSummary;
+  readonly explainsPackageExactly: boolean;
 }
 
 export interface FundingArbPortfolioMetadata extends Readonly<Record<string, string | number | boolean>> {

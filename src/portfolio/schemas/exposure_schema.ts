@@ -46,6 +46,7 @@ export const PortfolioStateSchema = z.object({
 });
 
 export const TradeLedgerEntrySchema = z.object({
+  instrumentId: InstrumentIdSchema,
   route: z.enum([
     "noop",
     "open_long",
@@ -59,13 +60,22 @@ export const TradeLedgerEntrySchema = z.object({
     "grid_hold",
     "residual",
   ]),
-  dqContracts: z.number(),
+  dq: z.number(),
   basisId: StrategyBasisIdSchema.nullable(),
   strategyWeight: z.number(),
-  basisDqContracts: z.number(),
-  residualDqContracts: z.number(),
+  basisDq: z.number(),
+  residualDq: z.number(),
   residualReasonCode: ResidualReasonCodeSchema.nullable(),
   explainsDqExactly: z.boolean(),
+});
+
+export const TradePackageLedgerSchema = z.object({
+  basisId: StrategyBasisIdSchema.nullable(),
+  strategyWeight: z.number(),
+  legs: z.array(TradeLedgerEntrySchema),
+  residualLedger: z.array(ResidualPositionSchema),
+  residualSummary: ResidualLedgerSummarySchema,
+  explainsPackageExactly: z.boolean(),
 });
 
 export const OptimizationRequestSchema = z.object({

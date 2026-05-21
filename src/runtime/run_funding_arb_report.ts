@@ -1,5 +1,14 @@
 import { getDb } from "../monitor/storage.js";
 
+interface PackageLedgerSummaryView {
+  readonly basisId: string | null;
+  readonly strategyWeight: number;
+  readonly explainsPackageExactly: boolean;
+  readonly residualRowCount: number;
+  readonly residualGrossQuantity: number;
+  readonly residualNetQuantity: number;
+}
+
 interface CliOptions {
   readonly limit: number;
   readonly instanceId: string | null;
@@ -35,6 +44,32 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
 const options = parseCliOptions(process.argv.slice(2));
 const db = getDb();
 const bind = options.instanceId ? [options.instanceId, options.limit] : [options.limit];
+
+function safeParseJson(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function toPackageLedgerSummary(value: unknown): PackageLedgerSummaryView | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const residualSummary = row.residualSummary && typeof row.residualSummary === "object"
+    ? row.residualSummary as Record<string, unknown>
+    : null;
+  return {
+    basisId: typeof row.basisId === "string" ? row.basisId : null,
+    strategyWeight: typeof row.strategyWeight === "number" ? row.strategyWeight : 0,
+    explainsPackageExactly: row.explainsPackageExactly === true,
+    residualRowCount: typeof residualSummary?.rowCount === "number" ? residualSummary.rowCount : 0,
+    residualGrossQuantity: typeof residualSummary?.grossQuantity === "number" ? residualSummary.grossQuantity : 0,
+    residualNetQuantity: typeof residualSummary?.netQuantity === "number" ? residualSummary.netQuantity : 0,
+  };
+}
 
 const recentOpportunities = options.instanceId
   ? db.prepare(`
@@ -83,6 +118,7 @@ const recentEvents = options.instanceId
         perp_inst_id,
         package_btc_size,
         swap_contracts,
+        raw_json,
         created_at
       FROM funding_arb_events
       WHERE instance_id = ?
@@ -98,6 +134,7 @@ const recentEvents = options.instanceId
         perp_inst_id,
         package_btc_size,
         swap_contracts,
+        raw_json,
         created_at
       FROM funding_arb_events
       ORDER BY id DESC
@@ -112,6 +149,7 @@ const recentPortfolioSnapshots = db.prepare(`
     btc_delta,
     funding_exposure,
     regime,
+    raw_json,
     created_at
   FROM portfolio_snapshots
   WHERE source = 'local_funding_arbitrage'
@@ -140,11 +178,58 @@ const aggregates = options.instanceId
       FROM funding_arb_opportunities
     `).get();
 
+const recentEventPackageLedgers = (recentEvents as Array<Record<string, unknown>>)
+  .map((row) => {
+    const parsed = safeParseJson(row.raw_json);
+    const packageLedger = toPackageLedgerSummary(
+      parsed?.entryTradePackageLedger ?? parsed?.unwindTradePackageLedger
+    );
+    if (!packageLedger) return null;
+    return {
+      id: row.id,
+      instanceId: row.instance_id,
+      phase: row.phase,
+      createdAt: row.created_at,
+      packageLedger,
+    };
+  })
+  .filter((row): row is NonNullable<typeof row> => row !== null);
+
+const recentSnapshotConsistency = (recentPortfolioSnapshots as Array<Record<string, unknown>>)
+  .map((row) => {
+    const parsed = safeParseJson(row.raw_json);
+    const activePackageLedger = toPackageLedgerSummary(parsed?.activePackageLedger);
+    const portfolioState = parsed?.portfolioState && typeof parsed.portfolioState === "object"
+      ? parsed.portfolioState as Record<string, unknown>
+      : null;
+    const metadata = portfolioState?.metadata && typeof portfolioState.metadata === "object"
+      ? portfolioState.metadata as Record<string, unknown>
+      : null;
+    return {
+      id: row.id,
+      instId: row.inst_id,
+      regime: row.regime,
+      createdAt: row.created_at,
+      netDeltaBtc: typeof metadata?.netDeltaBtc === "number" ? metadata.netDeltaBtc : null,
+      activePackageLedger,
+    };
+  });
+
+const snapshotConsistencySummary = {
+  totalSnapshots: recentSnapshotConsistency.length,
+  activePackageSnapshots: recentSnapshotConsistency.filter((row) => row.activePackageLedger !== null).length,
+  residualSnapshots: recentSnapshotConsistency.filter((row) => (row.activePackageLedger?.residualRowCount ?? 0) > 0).length,
+  nonExactSnapshots: recentSnapshotConsistency.filter((row) => row.activePackageLedger?.explainsPackageExactly === false).length,
+};
+
 console.log(JSON.stringify({
   limit: options.limit,
   instanceId: options.instanceId,
   aggregates,
   recentOpportunities,
   recentEvents,
+  recentEventPackageLedgers,
   recentPortfolioSnapshots,
+  recentSnapshotConsistency,
+  snapshotConsistencySummary,
 }, null, 2));
