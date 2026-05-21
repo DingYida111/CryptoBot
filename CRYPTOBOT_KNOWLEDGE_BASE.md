@@ -262,6 +262,8 @@ Each plan row includes live preflight readiness:
 - `readyForLiveExecution`
 - `blockerCodes`
 - `blockers`
+- `adapterName`
+- `adapterOperation`
 
 Current blocker codes include:
 
@@ -282,6 +284,10 @@ Supervisor can run the same dry-run executor after strategy sync when explicitly
 - `RUNTIME_ACTION_EXECUTOR_TRADING_ADAPTER_CONFIGURED=true`
 
 This remains observe-only. It does not pause, flatten, or call exchange APIs.
+
+The executor currently uses `noop_runtime_action_adapter` as its default adapter boundary.
+It describes operations such as `pause_instrument` and `flatten_instrument`, but it does not call OKX or mutate live strategy state.
+Future live adapters should implement the same operation boundary before execution is enabled.
 
 ## 4. Current Architectural Layers
 

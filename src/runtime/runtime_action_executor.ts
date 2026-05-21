@@ -1,5 +1,10 @@
 import { getDb, updateRuntimeActionStatus } from "../monitor/storage.js";
 import {
+  createNoopRuntimeActionExecutionAdapter,
+  type RuntimeActionAdapterOperation,
+  type RuntimeActionExecutionAdapter,
+} from "./runtime_action_adapter.js";
+import {
   findRuntimeActionCooldownDuplicates,
   type RuntimeActionExecutorStatus,
   type RuntimeActionReportRow,
@@ -14,6 +19,7 @@ export type RuntimeActionExecutorDecision =
 export type RuntimeActionExecutionBlockerCode =
   | "LIVE_EXECUTION_NOT_ENABLED"
   | "TRADING_ADAPTER_NOT_CONFIGURED"
+  | "ADAPTER_ACTION_UNSUPPORTED"
   | "AFFECTED_INSTRUMENT_MISSING"
   | "COOLDOWN_DUPLICATE"
   | "RECORD_ONLY_ACTION"
@@ -27,6 +33,7 @@ export interface RuntimeActionExecutionBlocker {
 export interface RuntimeActionExecutionPreflightOptions {
   readonly liveExecutionEnabled?: boolean;
   readonly tradingAdapterConfigured?: boolean;
+  readonly adapter?: RuntimeActionExecutionAdapter;
 }
 
 export interface RuntimeActionExecutionPlanRow {
@@ -43,6 +50,8 @@ export interface RuntimeActionExecutionPlanRow {
   readonly readyForLiveExecution: boolean;
   readonly blockerCodes: readonly RuntimeActionExecutionBlockerCode[];
   readonly blockers: readonly RuntimeActionExecutionBlocker[];
+  readonly adapterName: string | null;
+  readonly adapterOperation: RuntimeActionAdapterOperation | null;
   readonly executorNote: string;
 }
 
@@ -58,6 +67,7 @@ export interface RuntimeActionExecutionPlan {
   readonly unsupportedCount: number;
   readonly readyForLiveExecutionCount: number;
   readonly blockedCount: number;
+  readonly adapterOperationCount: number;
   readonly blockerSummary: ReadonlyArray<{
     readonly code: RuntimeActionExecutionBlockerCode;
     readonly count: number;
@@ -148,11 +158,16 @@ function executableBlockers(
   options: RuntimeActionExecutionPreflightOptions,
 ): RuntimeActionExecutionBlocker[] {
   const blockers: RuntimeActionExecutionBlocker[] = [];
+  const adapter = options.adapter ?? createNoopRuntimeActionExecutionAdapter();
+  const tradingAdapterConfigured = options.tradingAdapterConfigured ?? adapter.configured;
   if (!options.liveExecutionEnabled) {
     blockers.push(blocker("LIVE_EXECUTION_NOT_ENABLED", "Live runtime action execution is not enabled."));
   }
-  if (!options.tradingAdapterConfigured) {
+  if (!tradingAdapterConfigured) {
     blockers.push(blocker("TRADING_ADAPTER_NOT_CONFIGURED", "No live runtime action trading adapter is configured."));
+  }
+  if (!adapter.supports(row.actionType)) {
+    blockers.push(blocker("ADAPTER_ACTION_UNSUPPORTED", `Configured adapter ${adapter.name} does not support ${row.actionType}.`));
   }
   if (
     (row.actionType === "pause_instrument" || row.actionType === "flatten_instrument") &&
@@ -161,6 +176,16 @@ function executableBlockers(
     blockers.push(blocker("AFFECTED_INSTRUMENT_MISSING", "Instrument action has no affected instrument IDs."));
   }
   return blockers;
+}
+
+function operationForRow(
+  row: RuntimeActionReportRow,
+  preflight: RuntimeActionExecutionPreflightOptions,
+): RuntimeActionAdapterOperation | null {
+  const adapter = preflight.adapter ?? createNoopRuntimeActionExecutionAdapter({
+    configured: preflight.tradingAdapterConfigured,
+  });
+  return adapter.describeOperation(row);
 }
 
 function parseInstrumentIds(value: string): readonly string[] {
@@ -252,6 +277,9 @@ function planRow(
   duplicateIds: ReadonlySet<number>,
   preflight: RuntimeActionExecutionPreflightOptions,
 ): RuntimeActionExecutionPlanRow {
+  const adapter = preflight.adapter ?? createNoopRuntimeActionExecutionAdapter({
+    configured: preflight.tradingAdapterConfigured,
+  });
   if (duplicateIds.has(row.id)) {
     const blockers = [
       blocker("COOLDOWN_DUPLICATE", "Action is a cooldown duplicate of a recent action."),
@@ -270,12 +298,15 @@ function planRow(
       readyForLiveExecution: false,
       blockerCodes: blockers.map((row) => row.code),
       blockers,
+      adapterName: adapter.name,
+      adapterOperation: null,
       executorNote: "Dry-run executor marked this proposed action as a cooldown duplicate.",
     };
   }
 
   if (EXECUTABLE_ACTION_TYPES.has(row.actionType)) {
     const blockers = executableBlockers(row, preflight);
+    const adapterOperation = operationForRow(row, preflight);
     return {
       id: row.id,
       actionType: row.actionType,
@@ -290,6 +321,8 @@ function planRow(
       readyForLiveExecution: blockers.length === 0,
       blockerCodes: blockers.map((row) => row.code),
       blockers,
+      adapterName: adapter.name,
+      adapterOperation,
       executorNote: `Dry-run executor would run ${row.actionType} if live execution were enabled.`,
     };
   }
@@ -312,6 +345,8 @@ function planRow(
       readyForLiveExecution: false,
       blockerCodes: blockers.map((row) => row.code),
       blockers,
+      adapterName: adapter.name,
+      adapterOperation: operationForRow(row, preflight),
       executorNote: `Dry-run executor acknowledges ${row.actionType}; no trading intervention is expected.`,
     };
   }
@@ -333,6 +368,8 @@ function planRow(
     readyForLiveExecution: false,
     blockerCodes: blockers.map((row) => row.code),
     blockers,
+    adapterName: adapter.name,
+    adapterOperation: null,
     executorNote: `Dry-run executor does not know how to handle ${row.actionType}.`,
   };
 }
@@ -360,6 +397,7 @@ export function buildRuntimeActionExecutionPlan(input: {
     unsupportedCount: rows.filter((row) => row.decision === "dry_run_unsupported").length,
     readyForLiveExecutionCount: rows.filter((row) => row.readyForLiveExecution).length,
     blockedCount: rows.filter((row) => !row.readyForLiveExecution).length,
+    adapterOperationCount: rows.filter((row) => row.adapterOperation !== null).length,
     blockerSummary: countBlockers(rows),
     rows,
   };
@@ -373,6 +411,9 @@ export function executeRuntimeActionDryRun(
   const ackDryRun = options.ackDryRun ?? false;
   const liveExecutionEnabled = options.liveExecutionEnabled ?? false;
   const tradingAdapterConfigured = options.tradingAdapterConfigured ?? false;
+  const adapter = createNoopRuntimeActionExecutionAdapter({
+    configured: tradingAdapterConfigured,
+  });
   const plan = buildRuntimeActionExecutionPlan({
     rows,
     cooldownMs,
@@ -380,6 +421,7 @@ export function executeRuntimeActionDryRun(
     preflight: {
       liveExecutionEnabled,
       tradingAdapterConfigured,
+      adapter,
     },
   });
   const acknowledgedAt = Date.now();

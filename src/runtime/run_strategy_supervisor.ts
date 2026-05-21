@@ -100,6 +100,7 @@ async function runOnce(): Promise<void> {
       unsupportedCount: executorResult.plan.unsupportedCount,
       readyForLiveExecutionCount: executorResult.plan.readyForLiveExecutionCount,
       blockedCount: executorResult.plan.blockedCount,
+      adapterOperationCount: executorResult.plan.adapterOperationCount,
       blockerSummary: executorResult.plan.blockerSummary,
     });
   }

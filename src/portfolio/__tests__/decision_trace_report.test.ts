@@ -370,6 +370,8 @@ test("runtime action executor builds dry-run plan without enabling execution", (
     "LIVE_EXECUTION_NOT_ENABLED",
     "TRADING_ADAPTER_NOT_CONFIGURED",
   ]);
+  assert.equal(plan.rows[0]?.adapterName, "noop_runtime_action_adapter");
+  assert.equal(plan.rows[0]?.adapterOperation?.target, "instrument");
   assert.equal(plan.rows[0]?.nextStatus, "dry_run_acknowledged");
   assert.equal(plan.rows[1]?.nextStatus, "dry_run_cooldown_duplicate");
 });
@@ -408,5 +410,13 @@ test("runtime action executor preflight can model live readiness without executi
   assert.equal(plan.executionEnabled, false);
   assert.equal(plan.readyForLiveExecutionCount, 1);
   assert.equal(plan.blockedCount, 0);
+  assert.equal(plan.adapterOperationCount, 1);
   assert.deepEqual(plan.rows[0]?.blockerCodes, []);
+  assert.deepEqual(plan.rows[0]?.adapterOperation, {
+    adapterName: "noop_runtime_action_adapter",
+    actionType: "flatten_instrument",
+    target: "instrument",
+    affectedInstrumentIds: [OKX_BTC_USDT_SWAP],
+    description: `Would flatten exposure for ${OKX_BTC_USDT_SWAP}.`,
+  });
 });
