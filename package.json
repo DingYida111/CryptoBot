@@ -22,6 +22,7 @@
     "run:runtime-trace-fixture": "node --import tsx src/runtime/run_runtime_trace_fixture.ts",
     "run:runtime-action-executor": "node --import tsx src/runtime/run_runtime_action_executor.ts",
     "run:runtime-heartbeat": "node --import tsx src/runtime/run_runtime_heartbeat.ts",
+    "run:pm2-heartbeat-proxy": "node --import tsx src/runtime/run_pm2_heartbeat_proxy.ts",
     "run:runtime-maintenance-lease": "node --import tsx src/runtime/run_runtime_maintenance_lease.ts",
     "run:runtime-watchdog": "node --import tsx src/runtime/run_runtime_watchdog.ts",
     "run:okx-connectivity": "node --import tsx src/runtime/run_okx_connectivity_check.ts",
