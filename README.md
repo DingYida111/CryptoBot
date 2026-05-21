@@ -24,6 +24,7 @@
 
 基础设计文档：
 
+- `CRYPTOBOT_KNOWLEDGE_BASE.md` — 全局本体与架构知识库，给人和 Agent 的统一入口
 - `STRATEGY_RUNTIME_ARCHITECTURE.md` — 当前托管策略运行时设计
 - `PORTFOLIO_ALGEBRA_FOUNDATION.md` — TypeScript-first 的 `instrument / security / strategy / residual` V1 落地方案
 - `PORTFOLIO_ALGEBRA_M1_BLUEPRINT.md` — `M1: Registry + Exposure Compiler` 的文件级施工蓝图
