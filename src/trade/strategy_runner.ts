@@ -15,17 +15,29 @@ import {
   sellDown,
   getAccountBalance,
 } from "./okx_trade.js";
+import type { Position as OkxPosition } from "./okx_trade.js";
 import { getChopGridSnapshot, getChopGridStats, maybeRunChopGrid, primeChopGridPosition } from "./chop_grid.js";
 import { logTradeEvent } from "./trade_logger.js";
 import { scoreStrategy, DEFAULT_SCORING_CONFIG } from "../strategy/scoring.js";
 import { getKronosProb, isKronosReady } from "../strategy/kronos.js";
 import { fetchOkxKlines, okxToBinanceCandle } from "../monitor/okx_klines.js";
-import { fetchBtcPrice } from "../monitor/okx.js";
+import { fetchBtcPrice, fetchBtcSwapMeta } from "../monitor/okx.js";
 import { pollPolymarket } from "../monitor/polymarket.js";
 import { config as dotenvConfig } from "dotenv";
 import { APP_CONFIG, getStartupRiskSummary } from "../config.js";
 import type { StrategySignal } from "../types.js";
 import type { Candle } from "../monitor/binance.js";
+import { insertPortfolioShadowLog, insertPortfolioSnapshot } from "../monitor/storage.js";
+import { chopGridMetadata } from "../portfolio/adapters/chop_grid_adapter.js";
+import { okxPositionsToInstrumentPositions } from "../portfolio/adapters/strategy_runner_adapter.js";
+import { STRATEGY_BASIS_SPECS, decomposeTradeIncrement } from "../portfolio/basis.js";
+import { computeExposure, toInstrumentSpecMap } from "../portfolio/exposure.js";
+import { buildBtcSwapInstrumentSpecFromMeta, OKX_BTC_USDT_SWAP } from "../portfolio/instrument_spec.js";
+import { buildOptimizationRequest } from "../portfolio/optimizer_request.js";
+import { runOptimizerStub } from "../portfolio/optimizer_stub.js";
+import type { DecisionIntent } from "../portfolio/portfolio_types.js";
+import { buildPortfolioState } from "../portfolio/portfolio_state.js";
+import { BTC_DELTA, BTC_PERP_FUNDING_OKX } from "../portfolio/security_spec.js";
 
 dotenvConfig();
 
@@ -115,6 +127,7 @@ let lastCandles: Candle[] = [];
 let lastSignal: StrategySignal | null = null;
 let cachedBalance: number | null = null;
 let lastBalanceTs = 0;
+let lastOkxPositions: OkxPosition[] = [];
 const BALANCE_CACHE_MS = 30_000;
 
 function log(msg: string): void {
@@ -162,6 +175,363 @@ function calcKellySize(rewardUsd: number, riskUsd: number, balance: number, btcP
   const cappedKelly = Math.min(rawKelly, MAX_POS_SIZE_PCT);
   const usdBudget = balance * cappedKelly;
   return Math.max(1, Math.round(usdBudget / (btcPrice * CONTRACT_SIZE)));
+}
+
+function currentSignedContracts(): number {
+  const rows = okxPositionsToInstrumentPositions(lastOkxPositions);
+  return rows[0]?.quantity ?? 0;
+}
+
+function currentAbsContracts(): number {
+  return Math.abs(currentSignedContracts());
+}
+
+function floatingPnlPctFor(side: "long" | "short", entryPrice: number, btcPrice: number): number {
+  return side === "long"
+    ? (btcPrice - entryPrice) / entryPrice * 100
+    : (entryPrice - btcPrice) / entryPrice * 100;
+}
+
+function buildDecisionIntent(
+  mode: DecisionIntent["mode"],
+  route: DecisionIntent["route"],
+  proposedDqContracts: number,
+  reason: string,
+  metadata: Readonly<Record<string, string | number | boolean>> = {}
+): DecisionIntent {
+  return {
+    mode,
+    route,
+    proposedDqContracts,
+    basis: decomposeTradeIncrement(proposedDqContracts),
+    reason,
+    metadata,
+  };
+}
+
+function computeSuggestedOpenContracts(
+  decision: TradeDecision,
+  signal: StrategySignal,
+  btcRef: number,
+  balance: number | null
+): number {
+  const stopLossPct = decision.stopLossPct;
+  const last15 = lastCandles.slice(-15);
+  const range15min = last15.length >= 5
+    ? Math.max(...last15.map((c) => c.high)) - Math.min(...last15.map((c) => c.low))
+    : btcRef * 0.002;
+  const rewardUsd = Math.abs(signal.edge) * range15min * btcRef;
+  const riskPerContract = stopLossPct / 100 * btcRef * CONTRACT_SIZE;
+  const size = balance !== null && balance > 0 ? calcKellySize(rewardUsd, riskPerContract, balance, btcRef) : 1;
+  return Math.min(size, 100);
+}
+
+function previewStepDownIntent(signal: StrategySignal, btcPrice: number): DecisionIntent | null {
+  if (position.side === null || position.originalSize === null || position.entryPrice === null) return null;
+  if (signal.profile === "MEAN_REVERT") return null;
+
+  const floatingPnlPct = floatingPnlPctFor(position.side, position.entryPrice, btcPrice);
+  const hardStopLossPct =
+    position.regimeSnapshot === "CHOP" || position.regimeSnapshot === "RANGE" ? -1.0 : -1.5;
+  if (floatingPnlPct <= hardStopLossPct) {
+    const dq = -currentSignedContracts();
+    return buildDecisionIntent("trade", position.side === "long" ? "close_long" : "close_short", dq, "hard_stop");
+  }
+
+  const nextStepIndex = position.lastStepIndex + 1;
+  if (nextStepIndex >= STEP_DOWN_LEVELS.length) return null;
+  const nextStep = STEP_DOWN_LEVELS[nextStepIndex];
+  if (floatingPnlPct < nextStep.profitPct) return null;
+
+  const currentSize = currentAbsContracts();
+  if (currentSize <= 0) return null;
+  const originalSize = position.originalSize ?? currentSize;
+  const toClose = Math.min(currentSize, Math.max(1, Math.floor(originalSize * nextStep.closeFraction)));
+  if (toClose <= 0) return null;
+
+  const dq = position.side === "long" ? -toClose : toClose;
+  return buildDecisionIntent(
+    "trade",
+    position.side === "long" ? "partial_close_long" : "partial_close_short",
+    dq,
+    `step_down_${nextStepIndex + 1}`,
+    { profitPct: floatingPnlPct }
+  );
+}
+
+function previewCloseIntent(signal: StrategySignal, btcPrice: number): DecisionIntent | null {
+  if (position.side === null || position.entryPrice === null || position.originalSize === null) return null;
+  if (position.isGrid) return null;
+
+  const pnlPct = floatingPnlPctFor(position.side, position.entryPrice, btcPrice);
+  const nowSec = Date.now() / 1000;
+  const windowEndTsSec = position.windowEndTimestamp ?? 0;
+  const remainingSec = windowEndTsSec - nowSec;
+  const remainingMins = remainingSec / 60;
+  const closeRoute = position.side === "long" ? "close_long" : "close_short";
+  const closeDq = -currentSignedContracts();
+
+  if (remainingSec <= 0) {
+    return buildDecisionIntent("trade", closeRoute, closeDq, "window_expired", { pnlPct, remainingMins });
+  }
+
+  if (remainingMins <= CLOSE_BEFORE_MINS) {
+    return buildDecisionIntent("trade", closeRoute, closeDq, "window_near_end", { pnlPct, remainingMins });
+  }
+
+  const elapsedMs = Date.now() - (position.entryTime ?? 0);
+  if (elapsedMs >= MAX_HOLDING_MS) {
+    return buildDecisionIntent("trade", closeRoute, closeDq, "max_holding", { pnlPct });
+  }
+
+  const stopTriggered = position.side === "long"
+    ? btcPrice <= position.entryPrice * (1 - position.stopLossPct / 100)
+    : btcPrice >= position.entryPrice * (1 + position.stopLossPct / 100);
+  if (stopTriggered) {
+    return buildDecisionIntent("trade", closeRoute, closeDq, "stop_loss", { pnlPct });
+  }
+
+  if (position.isContrarian) {
+    const shouldExit =
+      (position.side === "long" && signal.regime === "TREND_DOWN") ||
+      (position.side === "short" && signal.regime === "TREND_UP");
+    if (shouldExit) {
+      return buildDecisionIntent("trade", closeRoute, closeDq, "regime_shift", { pnlPct, regime: signal.regime });
+    }
+  }
+
+  return null;
+}
+
+function previewNoSignalIntent(): DecisionIntent {
+  if (position.side === null || position.isGrid) {
+    return buildDecisionIntent("hold", "noop", 0, "no_signal_no_action");
+  }
+
+  const nowSec = Date.now() / 1000;
+  const remaining = (position.windowEndTimestamp ?? 0) - nowSec;
+  const holdDurationMs = position.entryTime ? Date.now() - position.entryTime : 0;
+  const closeBeforeSec = CLOSE_BEFORE_MINS * 60;
+  const windowClosingSoon = remaining <= closeBeforeSec;
+  const maxHoldingExceeded = holdDurationMs > regimeMaxHoldingMs(lastSignal);
+
+  if (!windowClosingSoon && !maxHoldingExceeded) {
+    return buildDecisionIntent("hold", "noop", 0, "no_signal_hold");
+  }
+
+  const reason = windowClosingSoon ? "window_closing_no_signal" : "max_holding_no_signal";
+  return buildDecisionIntent(
+    "trade",
+    position.side === "long" ? "close_long" : "close_short",
+    -currentSignedContracts(),
+    reason
+  );
+}
+
+async function previewRunnerIntent(
+  signal: StrategySignal,
+  upBid: number,
+  btcPrice: number,
+  endTimestamp: number
+): Promise<DecisionIntent> {
+  if (position.side !== null && position.isGrid) {
+    if (!isChopLike(signal)) {
+      return buildDecisionIntent("grid", "grid_exit", -currentAbsContracts(), "grid_regime_shift", {
+        regime: signal.regime,
+      });
+    }
+    return buildDecisionIntent("grid", "grid_hold", 0, "grid_manage", { regime: signal.regime });
+  }
+
+  if (position.side !== null) {
+    const stepDownIntent = previewStepDownIntent(signal, btcPrice);
+    const closeIntent = previewCloseIntent(signal, btcPrice);
+    if (closeIntent) {
+      return closeIntent;
+    }
+    if (stepDownIntent) {
+      return stepDownIntent;
+    }
+    return buildDecisionIntent("hold", "noop", 0, "position_hold");
+  }
+
+  if (isChopLike(signal)) {
+    const seedSize = Math.max(1, CHOP_GRID_CONFIG.orderSize * Math.max(1, CHOP_GRID_CONFIG.seedMultiplier));
+    return buildDecisionIntent("grid", "grid_seed", seedSize, `grid_seed_${signal.regime}`, {
+      regime: signal.regime,
+      endTimestamp,
+    });
+  }
+
+  const decision = makeTradeDecision(signal, upBid, lastCandles);
+  if (!decision) {
+    return buildDecisionIntent("hold", "noop", 0, "filtered_no_trade", { regime: signal.regime });
+  }
+
+  const btcRef = lastBtcPrice ?? btcPrice ?? 76000;
+  const balance = await fetchBalance();
+  const suggestedSize = computeSuggestedOpenContracts(decision, signal, btcRef, balance);
+  return buildDecisionIntent(
+    "trade",
+    decision.direction === "up" ? "open_long" : "open_short",
+    decision.direction === "up" ? suggestedSize : -suggestedSize,
+    decision.reason,
+    { source: decision.source, regime: signal.regime }
+  );
+}
+
+async function buildShadowIntent(
+  signal: StrategySignal,
+  upBid: number,
+  btcPrice: number,
+  endTimestamp: number
+): Promise<DecisionIntent> {
+  const decision = position.side === null && !isChopLike(signal)
+    ? makeTradeDecision(signal, upBid, lastCandles)
+    : null;
+  const btcRef = lastBtcPrice ?? btcPrice ?? 76000;
+  const balance = await fetchBalance();
+  const recommendedOpenContracts = isChopLike(signal)
+    ? Math.max(1, CHOP_GRID_CONFIG.orderSize * Math.max(1, CHOP_GRID_CONFIG.seedMultiplier))
+    : decision
+      ? computeSuggestedOpenContracts(decision, signal, btcRef, balance)
+      : 0;
+  const stepDownIntent = previewStepDownIntent(signal, btcPrice);
+  const closeIntent = previewCloseIntent(signal, btcPrice);
+  const shadowReason = closeIntent?.reason ?? stepDownIntent?.reason ?? decision?.reason ?? `shadow_${signal.regime}`;
+
+  return runOptimizerStub({
+    currentContracts: currentSignedContracts(),
+    currentSide: position.side,
+    hasPosition: position.side !== null,
+    isGridPosition: position.isGrid,
+    signalDirection: decision?.direction ?? "none",
+    signalRegime: signal.regime,
+    recommendedOpenContracts,
+    shouldCloseForExit: closeIntent !== null || (stepDownIntent?.route === "close_long" || stepDownIntent?.route === "close_short"),
+    shouldPartialClose: stepDownIntent?.route === "partial_close_long" || stepDownIntent?.route === "partial_close_short",
+    partialCloseContracts: stepDownIntent ? Math.abs(stepDownIntent.proposedDqContracts) : 0,
+    shouldEnterGrid: position.side === null && isChopLike(signal),
+    shouldExitGrid: position.isGrid && !isChopLike(signal),
+    reason: shadowReason,
+  });
+}
+
+function buildShadowIntentNoSignal(): DecisionIntent {
+  const nowSec = Date.now() / 1000;
+  const remaining = (position.windowEndTimestamp ?? 0) - nowSec;
+  const holdDurationMs = position.entryTime ? Date.now() - position.entryTime : 0;
+  const closeBeforeSec = CLOSE_BEFORE_MINS * 60;
+  const windowClosingSoon = remaining <= closeBeforeSec;
+  const maxHoldingExceeded = holdDurationMs > regimeMaxHoldingMs(lastSignal);
+  const shouldClose = position.side !== null && !position.isGrid && (windowClosingSoon || maxHoldingExceeded);
+  return runOptimizerStub({
+    currentContracts: currentSignedContracts(),
+    currentSide: position.side,
+    hasPosition: position.side !== null,
+    isGridPosition: position.isGrid,
+    signalDirection: "none",
+    signalRegime: "NONE",
+    recommendedOpenContracts: 0,
+    shouldCloseForExit: shouldClose,
+    shouldPartialClose: false,
+    partialCloseContracts: 0,
+    shouldEnterGrid: false,
+    shouldExitGrid: false,
+    reason: shouldClose ? "shadow_no_signal_close" : "shadow_no_signal_hold",
+  });
+}
+
+async function persistPortfolioArtifacts(
+  signal: StrategySignal | null,
+  btcPrice: number | null,
+  actualIntent: DecisionIntent,
+  shadowIntent: DecisionIntent
+): Promise<void> {
+  const meta = await fetchBtcSwapMeta();
+  const instrumentSpec = buildBtcSwapInstrumentSpecFromMeta(meta);
+  const instrumentPositions = okxPositionsToInstrumentPositions(lastOkxPositions);
+  const exposures = computeExposure(instrumentPositions, toInstrumentSpecMap([instrumentSpec]));
+  const now = Date.now();
+  const gridSnapshot = getChopGridSnapshot();
+  const portfolioState = buildPortfolioState({
+    asOfMs: now,
+    instrumentPositions,
+    securityExposures: exposures,
+    cashBalances: cachedBalance === null ? {} : { USDT: cachedBalance },
+    residualPositions: shadowIntent.basis.residualDqContracts === 0
+      ? []
+      : [{
+          instrumentId: OKX_BTC_USDT_SWAP,
+          quantity: shadowIntent.basis.residualDqContracts,
+          reasonCode: shadowIntent.basis.residualReasonCode ?? ("UNROUTED_DECISION" as never),
+        }],
+    metadata: {
+      signalDirection: signal?.direction ?? "none",
+      signalRegime: signal?.regime ?? "NONE",
+      actualRoute: actualIntent.route,
+      shadowRoute: shadowIntent.route,
+      actualDqContracts: actualIntent.proposedDqContracts,
+      shadowDqContracts: shadowIntent.proposedDqContracts,
+      btcPrice: btcPrice ?? 0,
+      positionSide: position.side ?? "flat",
+      positionIsGrid: position.isGrid,
+      ...chopGridMetadata(gridSnapshot),
+    },
+  });
+
+  const optimizationRequest = buildOptimizationRequest({
+    portfolioState,
+    basisSpecs: STRATEGY_BASIS_SPECS,
+    objectiveScores: signal ? { signalEdge: signal.edge, confidence: signal.confidence } : {},
+    instrumentBounds: {
+      [OKX_BTC_USDT_SWAP]: [-MAX_POSITION_SIZE, MAX_POSITION_SIZE],
+    },
+    securityBounds: {
+      [BTC_DELTA]: [-MAX_POSITION_SIZE * CONTRACT_SIZE, MAX_POSITION_SIZE * CONTRACT_SIZE],
+      [BTC_PERP_FUNDING_OKX]: [-MAX_POSITION_SIZE * CONTRACT_SIZE, MAX_POSITION_SIZE * CONTRACT_SIZE],
+    },
+  });
+
+  insertPortfolioSnapshot({
+    source: "strategy_runner",
+    instId: "BTC-USDT-SWAP",
+    positionContracts: currentSignedContracts(),
+    btcDelta: portfolioState.securityExposures[BTC_DELTA] ?? 0,
+    fundingExposure: portfolioState.securityExposures[BTC_PERP_FUNDING_OKX] ?? 0,
+    regime: signal?.regime ?? null,
+    rawJson: JSON.stringify({
+      portfolioState,
+      optimizationRequest,
+    }),
+    createdAt: now,
+  });
+
+  const actualAbs = Math.abs(actualIntent.proposedDqContracts);
+  const shadowAbs = Math.abs(shadowIntent.proposedDqContracts);
+  const denom = Math.max(actualAbs, shadowAbs, 1);
+  const diffPct = Math.abs(actualIntent.proposedDqContracts - shadowIntent.proposedDqContracts) / denom * 100;
+  insertPortfolioShadowLog({
+    source: "strategy_runner",
+    actualRoute: actualIntent.route,
+    shadowRoute: shadowIntent.route,
+    actualDqContracts: actualIntent.proposedDqContracts,
+    shadowDqContracts: shadowIntent.proposedDqContracts,
+    diffPct,
+    rawJson: JSON.stringify({
+      actualIntent,
+      shadowIntent,
+      optimizationRequest,
+      signal: signal ? {
+        direction: signal.direction,
+        regime: signal.regime,
+        stage: signal.stage,
+        edge: signal.edge,
+        confidence: signal.confidence,
+      } : null,
+    }),
+    createdAt: now,
+  });
 }
 
 function isExtremeVolatility(candles: Candle[], btcPrice: number): boolean {
@@ -220,6 +590,7 @@ async function syncPosition(): Promise<void> {
   await primeChopGridPosition("BTC-USDT-SWAP");
   const positions = await getPositions("BTC-USDT-SWAP");
   const activePositions = positions.filter((p) => parseInt(p.pos) !== 0);
+  lastOkxPositions = activePositions;
   if (!activePositions.length) {
     if (position.side !== null) log(`[POS] Flat — no open positions on OKX`);
     resetPosition();
@@ -311,12 +682,7 @@ async function tryOpenPosition(
   const balance = await fetchBalance();
   const stopLossPct = decision.stopLossPct;
   const breakEvenPct = decision.breakEvenPct;
-
-  const last15 = lastCandles.slice(-15);
-  const range15min = last15.length >= 5 ? Math.max(...last15.map((c) => c.high)) - Math.min(...last15.map((c) => c.low)) : btcRef * 0.002;
-  const rewardUsd = Math.abs(signal.edge) * range15min * btcRef;
-  const riskPerContract = stopLossPct / 100 * btcRef * CONTRACT_SIZE;
-  const size = balance !== null && balance > 0 ? calcKellySize(rewardUsd, riskPerContract, balance, btcRef) : 1;
+  const size = computeSuggestedOpenContracts(decision, signal, btcRef, balance);
   const sizeStr = String(Math.min(size, 100));
 
   let result = null;
@@ -690,12 +1056,20 @@ async function main(): Promise<void> {
 
       const evalResult = await evaluateSignal();
       if (!evalResult) {
+        const actualIntent = previewNoSignalIntent();
+        const shadowIntent = buildShadowIntentNoSignal();
         await tryClosePositionNoSignal();
+        if (actualIntent.proposedDqContracts !== 0 && ENABLE_TRADING) {
+          await syncPosition();
+        }
+        await persistPortfolioArtifacts(null, lastBtcPrice, actualIntent, shadowIntent);
         await sleep(SIGNAL_INTERVAL_MS);
         continue;
       }
 
       const { signal, btcPrice, upBid, endTimestamp } = evalResult;
+      const actualIntent = await previewRunnerIntent(signal, upBid, btcPrice, endTimestamp);
+      const shadowIntent = await buildShadowIntent(signal, upBid, btcPrice, endTimestamp);
       lastSignal = signal;
       if (position.side === null || position.windowEndTimestamp === null) {
         position.windowEndTimestamp = endTimestamp;
@@ -758,6 +1132,11 @@ async function main(): Promise<void> {
           await tryOpenPosition(decision, signal, endTimestamp);
         }
       }
+
+      if (actualIntent.proposedDqContracts !== 0 && ENABLE_TRADING) {
+        await syncPosition();
+      }
+      await persistPortfolioArtifacts(signal, btcPrice, actualIntent, shadowIntent);
     } catch (err) {
       log(`ERROR: ${err}`);
     }

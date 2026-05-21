@@ -138,6 +138,36 @@ function initSchema(db: Database.Database): void {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (instance_id, algo_id, pos_side)
     );
+
+    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      inst_id TEXT,
+      position_contracts REAL,
+      btc_delta REAL,
+      funding_exposure REAL,
+      regime TEXT,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_created_at
+      ON portfolio_snapshots(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS portfolio_shadow_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      actual_route TEXT NOT NULL,
+      shadow_route TEXT NOT NULL,
+      actual_dq_contracts REAL NOT NULL,
+      shadow_dq_contracts REAL NOT NULL,
+      diff_pct REAL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_portfolio_shadow_log_created_at
+      ON portfolio_shadow_log(created_at DESC);
   `);
 
   const columns = new Set(
@@ -213,6 +243,28 @@ export interface ManagedStrategyPositionRecord {
   upl?: number | null;
   rawJson: string;
   updatedAt: number;
+}
+
+export interface PortfolioSnapshotRecord {
+  source: string;
+  instId?: string | null;
+  positionContracts?: number | null;
+  btcDelta?: number | null;
+  fundingExposure?: number | null;
+  regime?: string | null;
+  rawJson: string;
+  createdAt: number;
+}
+
+export interface PortfolioShadowLogRecord {
+  source: string;
+  actualRoute: string;
+  shadowRoute: string;
+  actualDqContracts: number;
+  shadowDqContracts: number;
+  diffPct?: number | null;
+  rawJson: string;
+  createdAt: number;
 }
 
 export function insertTick(tick: Tick): void {
@@ -465,6 +517,44 @@ export function replaceManagedStrategyPositions(
     }
   });
   tx();
+}
+
+export function insertPortfolioSnapshot(record: PortfolioSnapshotRecord): number {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO portfolio_snapshots (
+      source, inst_id, position_contracts, btc_delta, funding_exposure, regime, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.source,
+    record.instId ?? null,
+    record.positionContracts ?? null,
+    record.btcDelta ?? null,
+    record.fundingExposure ?? null,
+    record.regime ?? null,
+    record.rawJson,
+    record.createdAt
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function insertPortfolioShadowLog(record: PortfolioShadowLogRecord): number {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO portfolio_shadow_log (
+      source, actual_route, shadow_route, actual_dq_contracts, shadow_dq_contracts, diff_pct, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.source,
+    record.actualRoute,
+    record.shadowRoute,
+    record.actualDqContracts,
+    record.shadowDqContracts,
+    record.diffPct ?? null,
+    record.rawJson,
+    record.createdAt
+  );
+  return result.lastInsertRowid as number;
 }
 
 function rowToTick(row: any): Tick {

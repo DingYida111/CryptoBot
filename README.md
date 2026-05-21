@@ -21,7 +21,8 @@
 基础设计文档：
 
 - `STRATEGY_RUNTIME_ARCHITECTURE.md` — 当前托管策略运行时设计
-- `PORTFOLIO_ALGEBRA_FOUNDATION.md` — 下一阶段统一 `instrument / security / strategy / residual` 数学底座
+- `PORTFOLIO_ALGEBRA_FOUNDATION.md` — TypeScript-first 的 `instrument / security / strategy / residual` V1 落地方案
+- `PORTFOLIO_ALGEBRA_M1_BLUEPRINT.md` — `M1: Registry + Exposure Compiler` 的文件级施工蓝图
 
 ## 核心思路
 
@@ -296,11 +297,12 @@ pm2 logs cryptobot-supervisor
 1. `README.md`
 2. `STRATEGY_RUNTIME_ARCHITECTURE.md`
 3. `PORTFOLIO_ALGEBRA_FOUNDATION.md`
-4. `src/trade/strategy_runner.ts`
-5. `src/trade/chop_grid.ts`
-6. `src/trade/okx_bots.ts`
-7. `src/runtime/`
-8. `src/monitor/storage.ts`
+4. `PORTFOLIO_ALGEBRA_M1_BLUEPRINT.md`
+5. `src/trade/strategy_runner.ts`
+6. `src/trade/chop_grid.ts`
+7. `src/trade/okx_bots.ts`
+8. `src/runtime/`
+9. `src/monitor/storage.ts`
 
 这样能最快理解：
 

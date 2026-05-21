@@ -10,6 +10,7 @@
     "collect": "tsx src/monitor/run.ts",
     "benchmark:okx-grid": "tsx src/runtime/run_okx_grid_benchmark.ts",
     "supervisor:strategies": "tsx src/runtime/run_strategy_supervisor.ts",
+    "test:portfolio": "node --import tsx --test src/portfolio/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },

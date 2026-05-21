@@ -1,0 +1,66 @@
+import { z } from "zod";
+import { InstrumentIdSchema, ResidualReasonCodeSchema, SecurityIdSchema, StrategyBasisIdSchema, StrategyIdSchema } from "./ids_schema.js";
+
+export const InstrumentPositionSchema = z.object({
+  instrumentId: InstrumentIdSchema,
+  quantity: z.number(),
+});
+
+export const SecurityExposureSchema = z.object({
+  securityId: SecurityIdSchema,
+  quantity: z.number(),
+  unit: z.string().min(1),
+});
+
+export const ResidualPositionSchema = z.object({
+  instrumentId: InstrumentIdSchema,
+  quantity: z.number(),
+  reasonCode: ResidualReasonCodeSchema,
+});
+
+export const BasisDecompositionSchema = z.object({
+  basisId: StrategyBasisIdSchema.nullable(),
+  strategyWeight: z.number(),
+  basisDqContracts: z.number(),
+  residualDqContracts: z.number(),
+  residualReasonCode: ResidualReasonCodeSchema.nullable(),
+});
+
+export const PortfolioStateSchema = z.object({
+  asOfMs: z.number().int().nonnegative(),
+  instrumentPositions: z.record(InstrumentIdSchema, z.number()),
+  securityExposures: z.record(SecurityIdSchema, z.number()),
+  cashBalances: z.record(z.string(), z.number()),
+  residualPositions: z.record(InstrumentIdSchema, z.number()),
+  metadata: z.record(z.union([z.string(), z.number(), z.boolean()])),
+});
+
+export const OptimizationRequestSchema = z.object({
+  portfolioState: PortfolioStateSchema,
+  enabledStrategies: z.array(StrategyIdSchema),
+  basisIds: z.array(StrategyBasisIdSchema),
+  objectiveScores: z.record(z.string(), z.number()),
+  instrumentBounds: z.record(InstrumentIdSchema, z.tuple([z.number(), z.number()])),
+  securityBounds: z.record(SecurityIdSchema, z.tuple([z.number(), z.number()])),
+});
+
+export const DecisionIntentSchema = z.object({
+  mode: z.enum(["hold", "trade", "grid"]),
+  route: z.enum([
+    "noop",
+    "open_long",
+    "open_short",
+    "close_long",
+    "close_short",
+    "partial_close_long",
+    "partial_close_short",
+    "grid_seed",
+    "grid_exit",
+    "grid_hold",
+    "residual",
+  ]),
+  proposedDqContracts: z.number(),
+  basis: BasisDecompositionSchema,
+  reason: z.string().min(1),
+  metadata: z.record(z.union([z.string(), z.number(), z.boolean()])),
+});
