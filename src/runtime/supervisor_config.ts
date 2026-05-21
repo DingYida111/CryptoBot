@@ -67,6 +67,8 @@ export const StrategySupervisorEnvSchema = z.object({
   RUNTIME_ACTION_EXECUTOR_LIMIT: z.coerce.number().int().positive().default(50),
   RUNTIME_ACTION_EXECUTOR_COOLDOWN_MS: z.coerce.number().int().positive().default(300_000),
   RUNTIME_ACTION_EXECUTOR_ACK_DRY_RUN: BooleanString,
+  RUNTIME_ACTION_EXECUTOR_LIVE_EXECUTION_ENABLED: BooleanString,
+  RUNTIME_ACTION_EXECUTOR_TRADING_ADAPTER_CONFIGURED: BooleanString,
   RUNTIME_NOTIFY_WEBHOOK_URL: z.string().optional(),
   MANAGED_STRATEGY_INSTANCES_JSON: z.string().optional(),
 });

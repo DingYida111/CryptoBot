@@ -257,12 +257,29 @@ This cooldown layer is audit-only and does not suppress persistence or execution
 By default it does not write or trade. With `--ack-dry-run`, it only updates `runtime_actions.status` to
 `dry_run_acknowledged` or `dry_run_cooldown_duplicate`; it still does not call trading APIs.
 
+Each plan row includes live preflight readiness:
+
+- `readyForLiveExecution`
+- `blockerCodes`
+- `blockers`
+
+Current blocker codes include:
+
+- `LIVE_EXECUTION_NOT_ENABLED`
+- `TRADING_ADAPTER_NOT_CONFIGURED`
+- `AFFECTED_INSTRUMENT_MISSING`
+- `COOLDOWN_DUPLICATE`
+- `RECORD_ONLY_ACTION`
+- `UNSUPPORTED_ACTION`
+
 Supervisor can run the same dry-run executor after strategy sync when explicitly enabled:
 
 - `RUNTIME_ACTION_EXECUTOR_ENABLED=true`
 - `RUNTIME_ACTION_EXECUTOR_ACK_DRY_RUN=true`
 - `RUNTIME_ACTION_EXECUTOR_LIMIT=50`
 - `RUNTIME_ACTION_EXECUTOR_COOLDOWN_MS=300000`
+- `RUNTIME_ACTION_EXECUTOR_LIVE_EXECUTION_ENABLED=true`
+- `RUNTIME_ACTION_EXECUTOR_TRADING_ADAPTER_CONFIGURED=true`
 
 This remains observe-only. It does not pause, flatten, or call exchange APIs.
 

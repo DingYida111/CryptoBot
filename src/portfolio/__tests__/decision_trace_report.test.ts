@@ -365,6 +365,48 @@ test("runtime action executor builds dry-run plan without enabling execution", (
   assert.equal(plan.wouldExecuteCount, 1);
   assert.equal(plan.cooldownDuplicateCount, 1);
   assert.equal(plan.recordOnlyCount, 1);
+  assert.equal(plan.readyForLiveExecutionCount, 0);
+  assert.deepEqual(plan.rows[0]?.blockerCodes, [
+    "LIVE_EXECUTION_NOT_ENABLED",
+    "TRADING_ADAPTER_NOT_CONFIGURED",
+  ]);
   assert.equal(plan.rows[0]?.nextStatus, "dry_run_acknowledged");
   assert.equal(plan.rows[1]?.nextStatus, "dry_run_cooldown_duplicate");
+});
+
+test("runtime action executor preflight can model live readiness without executing", () => {
+  const plan = buildRuntimeActionExecutionPlan({
+    rows: [
+      {
+        id: 1,
+        surface: "portfolio_shadow_log",
+        surfaceRowId: 1,
+        messageCode: "ROUTE_MISMATCH",
+        category: "instrument_error",
+        scope: "instrument",
+        source: "runtime_trace_fixture",
+        traceVersion: "test-v1",
+        actionType: "flatten_instrument",
+        status: "proposed",
+        executionEnabled: false,
+        affectedInstrumentIds: [OKX_BTC_USDT_SWAP],
+        reason: "test",
+        createdAt: 1_000,
+        proposedAt: 1_000,
+        updatedAt: null,
+        executorNote: null,
+      },
+    ],
+    cooldownMs: 1_000,
+    ackDryRun: false,
+    preflight: {
+      liveExecutionEnabled: true,
+      tradingAdapterConfigured: true,
+    },
+  });
+
+  assert.equal(plan.executionEnabled, false);
+  assert.equal(plan.readyForLiveExecutionCount, 1);
+  assert.equal(plan.blockedCount, 0);
+  assert.deepEqual(plan.rows[0]?.blockerCodes, []);
 });

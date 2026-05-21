@@ -84,6 +84,8 @@ async function runOnce(): Promise<void> {
       limit: supervisorEnv.RUNTIME_ACTION_EXECUTOR_LIMIT,
       cooldownMs: supervisorEnv.RUNTIME_ACTION_EXECUTOR_COOLDOWN_MS,
       ackDryRun: supervisorEnv.RUNTIME_ACTION_EXECUTOR_ACK_DRY_RUN,
+      liveExecutionEnabled: supervisorEnv.RUNTIME_ACTION_EXECUTOR_LIVE_EXECUTION_ENABLED,
+      tradingAdapterConfigured: supervisorEnv.RUNTIME_ACTION_EXECUTOR_TRADING_ADAPTER_CONFIGURED,
       status: "proposed",
     });
     log("runtime action executor dry-run result", {
@@ -96,6 +98,9 @@ async function runOnce(): Promise<void> {
       recordOnlyCount: executorResult.plan.recordOnlyCount,
       cooldownDuplicateCount: executorResult.plan.cooldownDuplicateCount,
       unsupportedCount: executorResult.plan.unsupportedCount,
+      readyForLiveExecutionCount: executorResult.plan.readyForLiveExecutionCount,
+      blockedCount: executorResult.plan.blockedCount,
+      blockerSummary: executorResult.plan.blockerSummary,
     });
   }
 }

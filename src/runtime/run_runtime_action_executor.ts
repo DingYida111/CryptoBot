@@ -8,6 +8,8 @@ interface CliOptions {
   readonly status: string;
   readonly cooldownMs: number;
   readonly ackDryRun: boolean;
+  readonly liveExecutionEnabled: boolean;
+  readonly tradingAdapterConfigured: boolean;
 }
 
 function parsePositiveNumber(value: string | undefined): number | null {
@@ -24,6 +26,8 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
   let status = "proposed";
   let cooldownMs = 300_000;
   let ackDryRun = false;
+  let liveExecutionEnabled = false;
+  let tradingAdapterConfigured = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -72,6 +76,14 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
       ackDryRun = true;
       continue;
     }
+    if (arg === "--simulate-live-execution-enabled") {
+      liveExecutionEnabled = true;
+      continue;
+    }
+    if (arg === "--simulate-trading-adapter-configured") {
+      tradingAdapterConfigured = true;
+      continue;
+    }
     const parsed = parsePositiveNumber(arg);
     if (parsed !== null) {
       limit = Math.floor(parsed);
@@ -86,6 +98,8 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
     status,
     cooldownMs,
     ackDryRun,
+    liveExecutionEnabled,
+    tradingAdapterConfigured,
   };
 }
 
