@@ -43,6 +43,7 @@ Portfolio algebra shadow diagnostics:
 - `npm run report:runtime-traces -- 50 --persist-messages` — 将分类后的 `info / warning / instrument_error / major_error` 消息写入 `runtime_messages`
 - `npm run report:runtime-traces -- 50 --notify-dry-run` — 打印将要通知的 error 类消息，不发送外部请求
 - `RUNTIME_NOTIFY_WEBHOOK_URL=https://... npm run report:runtime-traces -- 50 --notify` — 发送 `notify=true` 的消息到 webhook
+- `npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run` — 生成一条模拟 `instrument_error`，验证消息落库和 dry-run 通知链路，不触发任何交易动作
 
 Funding arbitrage diagnostics:
 
