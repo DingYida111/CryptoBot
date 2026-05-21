@@ -24,6 +24,12 @@
 - `PORTFOLIO_ALGEBRA_FOUNDATION.md` — TypeScript-first 的 `instrument / security / strategy / residual` V1 落地方案
 - `PORTFOLIO_ALGEBRA_M1_BLUEPRINT.md` — `M1: Registry + Exposure Compiler` 的文件级施工蓝图
 
+Portfolio algebra shadow diagnostics:
+
+- `npm run report:portfolio-shadow -- 50` — 默认读取最新 `shadow_version` 的最近 50 条 shadow 行
+- `npm run report:portfolio-shadow -- 50 --all` — 跨版本查看历史
+- `npm run report:portfolio-shadow -- 50 --version portfolio-shadow-v1.1` — 指定版本过滤
+
 ## 核心思路
 
 Polymarket 是基于区块链的预测市场，其 BTC 15分钟"涨跌"市场（BID: "BTC 15分钟后上涨还是下跌？"）反映了交易者在短期内对 BTC 价格方向的群体预期。

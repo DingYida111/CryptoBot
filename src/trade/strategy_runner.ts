@@ -38,6 +38,7 @@ import { runOptimizerStub } from "../portfolio/optimizer_stub.js";
 import type { DecisionIntent } from "../portfolio/portfolio_types.js";
 import { BTC_DELTA, BTC_PERP_FUNDING_OKX } from "../portfolio/security_spec.js";
 import { buildResidualPosition } from "../portfolio/residual.js";
+import { PORTFOLIO_SHADOW_VERSION } from "../portfolio/version.js";
 
 dotenvConfig();
 
@@ -497,6 +498,7 @@ async function persistPortfolioArtifacts(
 
   insertPortfolioSnapshot({
     source: "strategy_runner",
+    shadowVersion: PORTFOLIO_SHADOW_VERSION,
     instId: "BTC-USDT-SWAP",
     positionContracts: currentSignedContracts(),
     btcDelta: portfolioState.securityExposures[BTC_DELTA] ?? 0,
@@ -515,6 +517,7 @@ async function persistPortfolioArtifacts(
   const diffPct = Math.abs(actualIntent.proposedDqContracts - shadowIntent.proposedDqContracts) / denom * 100;
   insertPortfolioShadowLog({
     source: "strategy_runner",
+    shadowVersion: PORTFOLIO_SHADOW_VERSION,
     actualRoute: actualIntent.route,
     shadowRoute: shadowIntent.route,
     actualDqContracts: actualIntent.proposedDqContracts,
@@ -543,6 +546,7 @@ async function persistPortfolioArtifacts(
   if (shadowIntent.basis.residualDqContracts !== 0) {
     insertPortfolioResidual({
       source: "strategy_runner",
+      shadowVersion: PORTFOLIO_SHADOW_VERSION,
       instId: "BTC-USDT-SWAP",
       quantity: shadowIntent.basis.residualDqContracts,
       reasonCode: shadowIntent.basis.residualReasonCode ?? "UNROUTED_DECISION",

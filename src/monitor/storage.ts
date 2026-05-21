@@ -142,6 +142,7 @@ function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS portfolio_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source TEXT NOT NULL,
+      shadow_version TEXT,
       inst_id TEXT,
       position_contracts REAL,
       btc_delta REAL,
@@ -157,6 +158,7 @@ function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS portfolio_shadow_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source TEXT NOT NULL,
+      shadow_version TEXT,
       actual_route TEXT NOT NULL,
       shadow_route TEXT NOT NULL,
       actual_dq_contracts REAL NOT NULL,
@@ -177,6 +179,7 @@ function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS portfolio_residuals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source TEXT NOT NULL,
+      shadow_version TEXT,
       inst_id TEXT NOT NULL,
       quantity REAL NOT NULL,
       reason_code TEXT NOT NULL,
@@ -223,6 +226,35 @@ function initSchema(db: Database.Database): void {
       db.exec(`ALTER TABLE portfolio_shadow_log ADD COLUMN ${col} ${type}`);
     }
   }
+
+  const snapshotColumns = new Set(
+    (db.prepare("PRAGMA table_info(portfolio_snapshots)").all() as Array<{ name: string }>)
+      .map((row) => row.name)
+  );
+  if (!snapshotColumns.has("shadow_version")) {
+    db.exec("ALTER TABLE portfolio_snapshots ADD COLUMN shadow_version TEXT");
+  }
+
+  if (!shadowColumns.has("shadow_version")) {
+    db.exec("ALTER TABLE portfolio_shadow_log ADD COLUMN shadow_version TEXT");
+  }
+
+  const residualColumns = new Set(
+    (db.prepare("PRAGMA table_info(portfolio_residuals)").all() as Array<{ name: string }>)
+      .map((row) => row.name)
+  );
+  if (!residualColumns.has("shadow_version")) {
+    db.exec("ALTER TABLE portfolio_residuals ADD COLUMN shadow_version TEXT");
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_version_created_at
+      ON portfolio_snapshots(shadow_version, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_portfolio_shadow_log_version_created_at
+      ON portfolio_shadow_log(shadow_version, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_portfolio_residuals_version_created_at
+      ON portfolio_residuals(shadow_version, created_at DESC);
+  `);
 }
 
 export interface ManagedStrategyRunRecord {
@@ -282,6 +314,7 @@ export interface ManagedStrategyPositionRecord {
 
 export interface PortfolioSnapshotRecord {
   source: string;
+  shadowVersion: string;
   instId?: string | null;
   positionContracts?: number | null;
   btcDelta?: number | null;
@@ -293,6 +326,7 @@ export interface PortfolioSnapshotRecord {
 
 export interface PortfolioShadowLogRecord {
   source: string;
+  shadowVersion: string;
   actualRoute: string;
   shadowRoute: string;
   actualDqContracts: number;
@@ -309,6 +343,7 @@ export interface PortfolioShadowLogRecord {
 
 export interface PortfolioResidualRecord {
   source: string;
+  shadowVersion: string;
   instId: string;
   quantity: number;
   reasonCode: string;
@@ -572,10 +607,11 @@ export function insertPortfolioSnapshot(record: PortfolioSnapshotRecord): number
   const db = getDb();
   const result = db.prepare(`
     INSERT INTO portfolio_snapshots (
-      source, inst_id, position_contracts, btc_delta, funding_exposure, regime, raw_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      source, shadow_version, inst_id, position_contracts, btc_delta, funding_exposure, regime, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.source,
+    record.shadowVersion,
     record.instId ?? null,
     record.positionContracts ?? null,
     record.btcDelta ?? null,
@@ -591,12 +627,13 @@ export function insertPortfolioShadowLog(record: PortfolioShadowLogRecord): numb
   const db = getDb();
   const result = db.prepare(`
     INSERT INTO portfolio_shadow_log (
-      source, actual_route, shadow_route, actual_dq_contracts, shadow_dq_contracts,
+      source, shadow_version, actual_route, shadow_route, actual_dq_contracts, shadow_dq_contracts,
       actual_basis_id, shadow_basis_id, actual_residual_contracts, shadow_residual_contracts,
       shadow_residual_reason, diff_pct, raw_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.source,
+    record.shadowVersion,
     record.actualRoute,
     record.shadowRoute,
     record.actualDqContracts,
@@ -617,10 +654,11 @@ export function insertPortfolioResidual(record: PortfolioResidualRecord): number
   const db = getDb();
   const result = db.prepare(`
     INSERT INTO portfolio_residuals (
-      source, inst_id, quantity, reason_code, raw_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      source, shadow_version, inst_id, quantity, reason_code, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.source,
+    record.shadowVersion,
     record.instId,
     record.quantity,
     record.reasonCode,

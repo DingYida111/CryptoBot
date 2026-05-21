@@ -3,6 +3,7 @@ import type { PortfolioShadowReportRow } from "./shadow_report.js";
 import { extractShadowMismatchDetails, summarizeShadowRows } from "./shadow_report.js";
 
 interface ShadowRowDb {
+  shadow_version: string | null;
   actual_route: string;
   shadow_route: string;
   actual_dq_contracts: number;
@@ -17,6 +18,7 @@ interface ShadowRowDb {
 }
 
 interface ResidualRowDb {
+  shadow_version: string | null;
   source: string;
   inst_id: string;
   quantity: number;
@@ -24,35 +26,121 @@ interface ResidualRowDb {
   created_at: number;
 }
 
-const limitArg = process.argv[2];
-const parsedLimit = limitArg ? Number(limitArg) : 200;
-const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 200;
+interface CliOptions {
+  readonly limit: number;
+  readonly version: string | null;
+  readonly allVersions: boolean;
+}
+
+function parseCliOptions(argv: readonly string[]): CliOptions {
+  let limit = 200;
+  let version: string | null = null;
+  let allVersions = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg) continue;
+    if (arg === "--all") {
+      allVersions = true;
+      continue;
+    }
+    if (arg === "--version") {
+      const next = argv[index + 1];
+      if (next) {
+        version = next;
+        index += 1;
+      }
+      continue;
+    }
+    const parsed = Number(arg);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      limit = Math.floor(parsed);
+    }
+  }
+
+  return {
+    limit,
+    version,
+    allVersions,
+  };
+}
+
+const options = parseCliOptions(process.argv.slice(2));
+const limit = options.limit;
 
 const db = getDb();
-const rows = db.prepare(`
-  SELECT
-    actual_route,
-    shadow_route,
-    actual_dq_contracts,
-    shadow_dq_contracts,
-    actual_basis_id,
-    shadow_basis_id,
-    actual_residual_contracts,
-    shadow_residual_contracts,
-    shadow_residual_reason,
-    diff_pct,
-    created_at
+const availableVersions = db.prepare(`
+  SELECT DISTINCT shadow_version
   FROM portfolio_shadow_log
-  ORDER BY id DESC
-  LIMIT ?
-`).all(limit) as ShadowRowDb[];
+  WHERE shadow_version IS NOT NULL
+  ORDER BY shadow_version DESC
+`).all() as Array<{ shadow_version: string | null }>;
 
-const residualRows = db.prepare(`
-  SELECT source, inst_id, quantity, reason_code, created_at
-  FROM portfolio_residuals
+const latestVersionRow = db.prepare(`
+  SELECT shadow_version
+  FROM portfolio_shadow_log
+  WHERE shadow_version IS NOT NULL
   ORDER BY id DESC
-  LIMIT ?
-`).all(Math.min(limit, 20)) as ResidualRowDb[];
+  LIMIT 1
+`).get() as { shadow_version: string | null } | undefined;
+
+const resolvedVersion = options.allVersions
+  ? null
+  : options.version ?? latestVersionRow?.shadow_version ?? null;
+
+const rows = resolvedVersion === null
+  ? db.prepare(`
+      SELECT
+        shadow_version,
+        actual_route,
+        shadow_route,
+        actual_dq_contracts,
+        shadow_dq_contracts,
+        actual_basis_id,
+        shadow_basis_id,
+        actual_residual_contracts,
+        shadow_residual_contracts,
+        shadow_residual_reason,
+        diff_pct,
+        created_at
+      FROM portfolio_shadow_log
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(limit) as ShadowRowDb[]
+  : db.prepare(`
+      SELECT
+        shadow_version,
+        actual_route,
+        shadow_route,
+        actual_dq_contracts,
+        shadow_dq_contracts,
+        actual_basis_id,
+        shadow_basis_id,
+        actual_residual_contracts,
+        shadow_residual_contracts,
+        shadow_residual_reason,
+        diff_pct,
+        created_at
+      FROM portfolio_shadow_log
+      WHERE shadow_version = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(resolvedVersion, limit) as ShadowRowDb[];
+
+const residualRows = resolvedVersion === null
+  ? db.prepare(`
+      SELECT shadow_version, source, inst_id, quantity, reason_code, created_at
+      FROM portfolio_residuals
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(Math.min(limit, 20)) as ResidualRowDb[]
+  : db.prepare(`
+      SELECT shadow_version, source, inst_id, quantity, reason_code, created_at
+      FROM portfolio_residuals
+      WHERE shadow_version = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(resolvedVersion, Math.min(limit, 20)) as ResidualRowDb[];
 
 const mapped: PortfolioShadowReportRow[] = rows.map((row) => ({
   actualRoute: row.actual_route,
@@ -72,6 +160,11 @@ const summary = summarizeShadowRows(mapped);
 const mismatches = extractShadowMismatchDetails(mapped, 10);
 console.log(JSON.stringify({
   limit,
+  shadowVersion: resolvedVersion,
+  allVersions: options.allVersions,
+  availableVersions: availableVersions
+    .map((row) => row.shadow_version)
+    .filter((value): value is string => value !== null),
   summary,
   mismatches,
   recentResiduals: residualRows,
