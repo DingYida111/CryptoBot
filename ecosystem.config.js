@@ -164,5 +164,38 @@ module.exports = {
       kill_timeout: 10000,
       listen_timeout: 10000,
     },
+    {
+      name: "cryptobot-okx-funding-watch",
+      script: "node_modules/.bin/tsx",
+      args: "src/trade/run_okx_batch_funding_pair_watcher.ts",
+      cwd: __dirname,
+
+      watch: false,
+      autorestart: true,
+      restart_delay: 5000,
+      max_restarts: 20,
+      min_uptime: "10s",
+
+      env: {
+        NODE_ENV: "production",
+        BATCH_FUNDING_ARB_POLL_MS: "60000",
+        BATCH_FUNDING_ARB_WINDOW_POLL_MS: "5000",
+        BATCH_FUNDING_ARB_HOLD_MS: "3000",
+      },
+      env_development: {
+        NODE_ENV: "development",
+      },
+
+      out_file: "logs/batch-funding-watch.out.log",
+      error_file: "logs/batch-funding-watch.log",
+      merge_logs: true,
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+      max_size: "50M",
+      retain: 10,
+
+      max_memory_restart: "512M",
+      kill_timeout: 10000,
+      listen_timeout: 10000,
+    },
   ],
 };
