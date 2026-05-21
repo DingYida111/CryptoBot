@@ -4,6 +4,8 @@ dist/
 secrets/
 *.log
 data/*.sqlite3
+data/*.sqlite3-shm
+data/*.sqlite3-wal
 logs/
 .DS_Store
 *.tar.gz

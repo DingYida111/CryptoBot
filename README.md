@@ -44,6 +44,7 @@ Portfolio algebra shadow diagnostics:
 - `npm run report:runtime-traces -- 50 --notify-dry-run` — 打印将要通知的 error 类消息，不发送外部请求
 - `RUNTIME_NOTIFY_WEBHOOK_URL=https://... npm run report:runtime-traces -- 50 --notify` — 发送 `notify=true` 的消息到 webhook
 - `npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run` — 生成一条模拟 `instrument_error`，验证消息落库和 dry-run 通知链路，不触发任何交易动作
+- `npm run run:runtime-trace-fixture` — 写入一条标准 RuntimeDecisionTrace fixture 到 `portfolio_shadow_log`，用于无交易验证 observer/report 闭环
 
 Supervisor observe-only runtime trace monitoring:
 
