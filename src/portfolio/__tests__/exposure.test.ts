@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { computeDeltaPnl, computeExposure, computeUsdNotional, toInstrumentSpecMap } from "../exposure.js";
-import { buildBtcSwapInstrumentSpec } from "../instrument_spec.js";
-import { OKX_BTC_USDT_SWAP } from "../instrument_spec.js";
+import { buildBtcSpotInstrumentSpec, buildBtcSwapInstrumentSpec } from "../instrument_spec.js";
+import { OKX_BTC_USDT_SPOT, OKX_BTC_USDT_SWAP } from "../instrument_spec.js";
 import { runOptimizerStub } from "../optimizer_stub.js";
 import { BTC_DELTA, BTC_PERP_FUNDING_OKX, USDT_CASH } from "../security_spec.js";
 import { listActiveSecuritySpecs } from "../security_spec.js";
@@ -32,6 +32,19 @@ test("signed exposure tracks short positions", () => {
   assert.equal(byId[BTC_PERP_FUNDING_OKX], -0.04);
 });
 
+test("spot plus short perp package exposes near-flat delta and short funding leg", () => {
+  const rows = computeExposure(
+    [
+      { instrumentId: OKX_BTC_USDT_SPOT, quantity: 0.00999 },
+      { instrumentId: OKX_BTC_USDT_SWAP, quantity: -1 },
+    ],
+    toInstrumentSpecMap([buildBtcSpotInstrumentSpec(), buildBtcSwapInstrumentSpec()])
+  );
+  const byId = Object.fromEntries(rows.map((row) => [row.securityId, row.quantity]));
+  assert.ok(Math.abs(byId[BTC_DELTA] - (-0.00001)) < 1e-12);
+  assert.equal(byId[BTC_PERP_FUNDING_OKX], -0.01);
+});
+
 test("usd notional matches contract arithmetic", () => {
   const rows = computeExposure(
     [{ instrumentId: OKX_BTC_USDT_SWAP, quantity: 3 }],
@@ -58,6 +71,7 @@ test("registry schemas validate active specs", () => {
   for (const spec of listActiveSecuritySpecs()) {
     assert.doesNotThrow(() => SecuritySpecSchema.parse(spec));
   }
+  assert.doesNotThrow(() => InstrumentSpecSchema.parse(buildBtcSpotInstrumentSpec()));
   assert.doesNotThrow(() => InstrumentSpecSchema.parse(buildBtcSwapInstrumentSpec()));
 });
 

@@ -1,6 +1,10 @@
 import { computeFundingArbitrageOpportunity, type FundingArbitrageConfig, type FundingArbitrageOpportunity } from "../carry/funding_arbitrage.js";
 import { fetchFundingRate, fetchInstrumentMeta, fetchTicker } from "../monitor/okx.js";
-import { insertFundingArbEvent, insertFundingArbOpportunity } from "../monitor/storage.js";
+import { insertFundingArbEvent, insertFundingArbOpportunity, insertPortfolioSnapshot } from "../monitor/storage.js";
+import { computeExposure, toInstrumentSpecMap } from "../portfolio/exposure.js";
+import { buildBtcSpotInstrumentSpecFromMeta, buildBtcSwapInstrumentSpecFromMeta } from "../portfolio/instrument_spec.js";
+import { BTC_DELTA, BTC_PERP_FUNDING_OKX } from "../portfolio/security_spec.js";
+import { buildPortfolioStateFromFundingArb, fundingArbPositionsToInstrumentPositions } from "../portfolio/adapters/funding_arbitrage_adapter.js";
 import {
   buySpot,
   getAssetBalance,
@@ -18,6 +22,8 @@ import type {
   ManagedStrategyStartResult,
   ManagedStrategySyncResult,
 } from "./managed_strategies.js";
+
+const FUNDING_ARB_PORTFOLIO_VERSION = "funding-arb-v1";
 
 type FundingPhase =
   | "idle"
@@ -128,6 +134,10 @@ async function safeFlattenShortPerp(instId: string, contracts: number): Promise<
   });
 }
 
+function toPortfolioTimestamp(value: number | null): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 export class LocalFundingArbitrageController implements ManagedStrategyController {
   readonly definition = DEFINITION;
   private readonly states = new Map<string, FundingRuntimeState>();
@@ -160,6 +170,88 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
       swapContracts: packageState?.swapContracts ?? null,
       rawJson: JSON.stringify(payload),
       createdAt: Date.now(),
+    });
+  }
+
+  private persistPortfolioArtifacts(input: {
+    now: number;
+    state: FundingRuntimeState;
+    opportunity: FundingArbitrageOpportunity;
+    paperExecute: boolean;
+    spotMetaLotSz: number;
+    swapMetaCtVal: number;
+    currentSpotBtc: number;
+    currentShortContracts: number;
+    currentShortBtc: number;
+    netDeltaBtc: number;
+    usdtCashBalance: number;
+  }): void {
+    const spotSpec = buildBtcSpotInstrumentSpecFromMeta({
+      tickSz: 0,
+      lotSz: input.spotMetaLotSz,
+      minSz: input.spotMetaLotSz,
+    });
+    const swapSpec = buildBtcSwapInstrumentSpecFromMeta({
+      tickSz: 0,
+      lotSz: 1,
+      minSz: 1,
+      ctVal: input.swapMetaCtVal,
+    });
+    const instrumentPositions = fundingArbPositionsToInstrumentPositions({
+      spotBtc: input.currentSpotBtc,
+      shortContracts: input.currentShortContracts,
+    });
+    const securityExposures = computeExposure(
+      instrumentPositions,
+      toInstrumentSpecMap([spotSpec, swapSpec]),
+    );
+    const portfolioState = buildPortfolioStateFromFundingArb({
+      asOfMs: input.now,
+      instrumentPositions,
+      securityExposures,
+      cashBalances: {
+        BTC: input.currentSpotBtc,
+        USDT: input.usdtCashBalance,
+      },
+      metadata: {
+        phase: input.state.phase,
+        lastReason: input.state.lastReason,
+        paperExecute: input.paperExecute,
+        spotInstId: input.opportunity.spotInstId,
+        perpInstId: input.opportunity.perpInstId,
+        currentSpotBtc: input.currentSpotBtc,
+        currentShortContracts: input.currentShortContracts,
+        currentShortBtc: input.currentShortBtc,
+        netDeltaBtc: input.netDeltaBtc,
+        fundingRate: input.opportunity.fundingRate,
+        nextFundingTimeMs: toPortfolioTimestamp(input.opportunity.nextFundingTimeMs),
+        basisBps: input.opportunity.basisBps,
+        basisUsd: input.opportunity.basisUsd,
+        netCarryEdgeUsd: input.opportunity.netCarryEdgeUsd,
+        expectedFundingUsd: input.opportunity.expectedFundingUsd,
+        expectedFeesUsd: input.opportunity.expectedFeesUsd,
+        expectedSlippageUsd: input.opportunity.expectedSlippageUsd,
+        expectedBasisRiskBufferUsd: input.opportunity.expectedBasisRiskBufferUsd,
+        entryWindowOpen: input.opportunity.entryWindowOpen,
+        shouldEnter: input.opportunity.shouldEnter,
+        forceValidationEntry: input.opportunity.forceValidationEntry,
+      },
+    });
+
+    insertPortfolioSnapshot({
+      source: "local_funding_arbitrage",
+      shadowVersion: FUNDING_ARB_PORTFOLIO_VERSION,
+      instId: `${input.opportunity.spotInstId}|${input.opportunity.perpInstId}`,
+      positionContracts: -input.currentShortContracts,
+      btcDelta: portfolioState.securityExposures[BTC_DELTA] ?? 0,
+      fundingExposure: portfolioState.securityExposures[BTC_PERP_FUNDING_OKX] ?? 0,
+      regime: input.state.phase,
+      rawJson: JSON.stringify({
+        portfolioState,
+        opportunity: input.opportunity,
+        packageState: input.state.packageState,
+      }),
+      createdAt: input.now,
     });
   }
 
@@ -216,13 +308,14 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
     const perpInstId = toString(config.parameters.perpInstId, "BTC-USDT-SWAP");
     const carryConfig = toConfig(config);
 
-    const [spotTicker, perpTicker, funding, spotMeta, swapMeta, btcBalance, perpPositions] = await Promise.all([
+    const [spotTicker, perpTicker, funding, spotMeta, swapMeta, btcBalance, usdtBalance, perpPositions] = await Promise.all([
       fetchTicker(spotInstId),
       fetchTicker(perpInstId),
       fetchFundingRate(perpInstId),
       fetchInstrumentMeta("SPOT", spotInstId),
       fetchInstrumentMeta("SWAP", perpInstId),
       getAssetBalance("BTC"),
+      getAssetBalance("USDT"),
       getPositions(perpInstId),
     ]);
 
@@ -234,12 +327,30 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
       });
       return { snapshot: { ...snapshot, state: "error" }, rawDetail: snapshot.detail, subOrders: [], positions: [] };
     }
+    const swapCtVal = swapMeta.ctVal;
 
-    const currentSpotBtc = btcBalance?.cashBal ?? 0;
-    const currentSpotAvailBtc = btcBalance?.availBal ?? 0;
-    const currentShortContracts = shortContractsFromPositions(perpPositions);
-    const currentShortBtc = currentShortContracts * swapMeta.ctVal;
-    const netDeltaBtc = currentSpotBtc - currentShortBtc;
+    let currentSpotBtc = btcBalance?.cashBal ?? 0;
+    let currentSpotAvailBtc = btcBalance?.availBal ?? 0;
+    let currentUsdtCash = usdtBalance?.cashBal ?? 0;
+    let currentShortContracts = shortContractsFromPositions(perpPositions);
+    let currentShortBtc = currentShortContracts * swapCtVal;
+    let netDeltaBtc = currentSpotBtc - currentShortBtc;
+    let livePerpPositions = perpPositions;
+
+    const refreshLiveState = async (): Promise<void> => {
+      const [freshBtcBalance, freshUsdtBalance, freshPerpPositions] = await Promise.all([
+        getAssetBalance("BTC"),
+        getAssetBalance("USDT"),
+        getPositions(perpInstId),
+      ]);
+      currentSpotBtc = freshBtcBalance?.cashBal ?? 0;
+      currentSpotAvailBtc = freshBtcBalance?.availBal ?? 0;
+      currentUsdtCash = freshUsdtBalance?.cashBal ?? 0;
+      currentShortContracts = shortContractsFromPositions(freshPerpPositions);
+      currentShortBtc = currentShortContracts * swapCtVal;
+      netDeltaBtc = currentSpotBtc - currentShortBtc;
+      livePerpPositions = freshPerpPositions;
+    };
 
     const opportunity = computeFundingArbitrageOpportunity({
       asOfMs: now,
@@ -255,7 +366,7 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
       perpAskSzContracts: perpTicker.askSz,
       fundingRate: funding.fundingRate,
       nextFundingTimeMs: funding.nextFundingTimeMs,
-      swapCtValBtc: swapMeta.ctVal,
+      swapCtValBtc: swapCtVal,
       swapLotSzContracts: swapMeta.lotSz,
       spotLotSzBtc: spotMeta.lotSz,
     }, carryConfig);
@@ -322,6 +433,7 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
         state.phase = "completed";
         state.validationCycleCompleted = true;
         state.lastReason = fundingPassed ? "funding_settlement_passed" : (exceededHold ? "max_hold_exceeded" : "hedge_broken");
+        await refreshLiveState();
       }
     } else {
       state.phase = opportunity.entryWindowOpen ? "evaluating_entry" : "await_entry_window";
@@ -370,6 +482,7 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
               spotResult,
               perpResult,
             }, state.packageState);
+            await refreshLiveState();
           }
         }
       } else if (opportunity.shouldEnter && paperExecute && !canEnterValidationCycle) {
@@ -377,6 +490,20 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
         state.lastReason = "validation_cycle_already_completed";
       }
     }
+
+    this.persistPortfolioArtifacts({
+      now,
+      state,
+      opportunity,
+      paperExecute,
+      spotMetaLotSz: spotMeta.lotSz,
+      swapMetaCtVal: swapCtVal,
+      currentSpotBtc,
+      currentShortContracts,
+      currentShortBtc,
+      netDeltaBtc,
+      usdtCashBalance: currentUsdtCash,
+    });
 
     const positions: Record<string, unknown>[] = [
       {
@@ -386,7 +513,7 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
         avgPx: spotTicker.last,
         upl: null,
       },
-      ...perpPositions.map((row) => ({ ...row })),
+      ...livePerpPositions.map((row) => ({ ...row })),
     ];
     const subOrders: Record<string, unknown>[] = state.packageState
       ? [

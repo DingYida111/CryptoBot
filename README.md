@@ -13,10 +13,14 @@
 当前已经接入的托管策略能力：
 
 - OKX `contract grid` 创建 / 查询 / 停止
+- Local `funding arbitrage` shadow / paper validation
 - 持久化 `managed_strategy_runs`
 - 持久化 `managed_strategy_snapshots`
 - 持久化 `managed_strategy_sub_orders`
 - 持久化 `managed_strategy_positions`
+- 持久化 `funding_arb_opportunities`
+- 持久化 `funding_arb_events`
+- 持久化 `portfolio_snapshots` for `local_funding_arbitrage`
 
 基础设计文档：
 
@@ -27,12 +31,19 @@
 - `PORTFOLIO_CARRY_AND_OKX_ARBITRAGE_REPORT.md` — OKX 官方套利产品栈对比、carry 建模建议、funding arbitrage worked example
 - `PORTFOLIO_CARRY_MODEL_NOTE.md` — carry 子模型的正式定义：funding / borrow / staking、realized vs expected、连续与离散结算
 - `FUNDING_ARBITRAGE_STRATEGY_SPEC.md` — 第一版 BTC 现货 + 合约资金费率套利策略规格：事件驱动、双腿执行、shadow-first
+- `FUNDING_ARBITRAGE_V1_RUNBOOK.md` — V1 落地说明：shadow / paper / official batch validation、supervisor 配置、持久化与已知限制
 
 Portfolio algebra shadow diagnostics:
 
 - `npm run report:portfolio-shadow -- 50` — 默认读取最新 `shadow_version` 的最近 50 条 shadow 行
 - `npm run report:portfolio-shadow -- 50 --all` — 跨版本查看历史
 - `npm run report:portfolio-shadow -- 50 --version portfolio-shadow-v1.1` — 指定版本过滤
+
+Funding arbitrage diagnostics:
+
+- `npm run run:funding-arb:validate` — 运行本地 funding arbitrage controller 的 shadow 或 paper 验证
+- `npm run run:okx-batch-funding-validate` — 直接通过 OKX `batch-orders` 做一笔官方接口对照验证
+- `npm run report:funding-arb -- 20` — 汇总最近 funding arb 机会、事件和 portfolio snapshots
 
 ## 核心思路
 
@@ -156,6 +167,7 @@ CryptoBot/
 
 - `src/trade/okx_bots.ts`
 - `src/runtime/okx_contract_grid_controller.ts`
+- `src/runtime/local_funding_arbitrage_controller.ts`
 
 职责：
 
@@ -197,6 +209,16 @@ CryptoBot/
 - 交易所其他托管策略
 
 都不需要重构主流程。
+
+Funding arbitrage 也已经按这一模式接入，不再是独立脚本：
+
+- strategy type: `local_funding_arbitrage`
+- execution modes: `shadow` / `paper`
+- persistence surfaces:
+  - `managed_strategy_*`
+  - `funding_arb_opportunities`
+  - `funding_arb_events`
+  - `portfolio_snapshots`
 
 ## 技术栈
 
@@ -258,6 +280,10 @@ STRATEGY_SUPERVISOR_WATCH=true
 STRATEGY_SUPERVISOR_INTERVAL_MS=60000
 STRATEGY_SUPERVISOR_AUTO_START=false
 STRATEGY_SUPERVISOR_ALLOW_BENCHMARK_FALLBACK=true
+
+# Optional generic managed strategy config
+# Recommended for local funding arbitrage or mixed strategy fleets
+# MANAGED_STRATEGY_INSTANCES_JSON=[{"instanceId":"funding_arb_btc_demo","type":"local_funding_arbitrage","instrument":"BTC funding package","enabled":true,"autoStart":true,"syncIntervalMs":5000,"parameters":{"spotInstId":"BTC-USDT","perpInstId":"BTC-USDT-SWAP","entryLeadMs":120000,"maxPackageSizeBtc":0.01,"minUsefulPackageSizeBtc":0.01,"spotFeeRate":0.001,"perpFeeRate":0.0005,"spotSlippageBps":5,"perpSlippageBps":5,"basisRiskBufferBps":8,"safetyBufferUsd":1,"paperExecute":false,"forceValidationEntry":false,"maxHoldMs":300000,"maxNetDeltaToleranceBtc":0.002}}]
 
 # OKX benchmark fallback instance
 OKX_BENCHMARK_ENABLED=true
@@ -354,6 +380,38 @@ pm2 logs cryptobot-supervisor
 ]
 ```
 
+Funding arbitrage 示例：
+
+```json
+[
+  {
+    "instanceId": "funding_arb_btc_demo",
+    "type": "local_funding_arbitrage",
+    "instrument": "BTC funding package",
+    "enabled": true,
+    "autoStart": true,
+    "syncIntervalMs": 5000,
+    "parameters": {
+      "spotInstId": "BTC-USDT",
+      "perpInstId": "BTC-USDT-SWAP",
+      "entryLeadMs": 120000,
+      "maxPackageSizeBtc": 0.01,
+      "minUsefulPackageSizeBtc": 0.01,
+      "spotFeeRate": 0.001,
+      "perpFeeRate": 0.0005,
+      "spotSlippageBps": 5,
+      "perpSlippageBps": 5,
+      "basisRiskBufferBps": 8,
+      "safetyBufferUsd": 1,
+      "paperExecute": false,
+      "forceValidationEntry": false,
+      "maxHoldMs": 300000,
+      "maxNetDeltaToleranceBtc": 0.002
+    }
+  }
+]
+```
+
 若未提供 `MANAGED_STRATEGY_INSTANCES_JSON`，supervisor 会回退到 `OKX_BENCHMARK_*` 配置，便于低成本快速上线对比实验。
 
 ## 数据库中的托管策略表
@@ -364,6 +422,9 @@ pm2 logs cryptobot-supervisor
 - `managed_strategy_snapshots`
 - `managed_strategy_sub_orders`
 - `managed_strategy_positions`
+- `funding_arb_opportunities`
+- `funding_arb_events`
+- `portfolio_snapshots`（`source = local_funding_arbitrage`）
 
 这些表的目标是让分析建立在结构化数据上，而不是建立在日志文本上。
 

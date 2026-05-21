@@ -44,7 +44,7 @@ export function persistManagedStrategySync(
     algoId: sync.snapshot.algoId ?? null,
     state: sync.snapshot.state,
     totalPnl: sync.snapshot.totalPnl ?? null,
-    rawJson: JSON.stringify(sync.snapshot.detail.detail ?? sync.rawDetail),
+    rawJson: JSON.stringify(sync.snapshot.detail),
     createdAt: sync.snapshot.capturedAt,
   });
 

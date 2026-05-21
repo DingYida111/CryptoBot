@@ -92,6 +92,30 @@ export interface PortfolioState {
   readonly metadata: Readonly<Record<string, string | number | boolean>>;
 }
 
+export interface FundingArbPortfolioMetadata extends Readonly<Record<string, string | number | boolean>> {
+  readonly phase: string;
+  readonly lastReason: string;
+  readonly paperExecute: boolean;
+  readonly spotInstId: string;
+  readonly perpInstId: string;
+  readonly currentSpotBtc: number;
+  readonly currentShortContracts: number;
+  readonly currentShortBtc: number;
+  readonly netDeltaBtc: number;
+  readonly fundingRate: number;
+  readonly nextFundingTimeMs: number;
+  readonly basisBps: number;
+  readonly basisUsd: number;
+  readonly netCarryEdgeUsd: number;
+  readonly expectedFundingUsd: number;
+  readonly expectedFeesUsd: number;
+  readonly expectedSlippageUsd: number;
+  readonly expectedBasisRiskBufferUsd: number;
+  readonly entryWindowOpen: boolean;
+  readonly shouldEnter: boolean;
+  readonly forceValidationEntry: boolean;
+}
+
 export interface OptimizationRequest {
   readonly portfolioState: PortfolioState;
   readonly enabledStrategies: readonly StrategyId[];
