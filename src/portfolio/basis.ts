@@ -29,6 +29,15 @@ export function decomposeTradeIncrement(
       residualReasonCode: asResidualReasonCode(residualReason),
     };
   }
+  if (Math.abs(dqContracts) <= 1e-12) {
+    return {
+      basisId: null,
+      strategyWeight: 0,
+      basisDqContracts: 0,
+      residualDqContracts: 0,
+      residualReasonCode: null,
+    };
+  }
   return {
     basisId: BASIS_LONG_BTC_SWAP,
     strategyWeight: dqContracts,

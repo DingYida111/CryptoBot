@@ -33,6 +33,18 @@ export interface PortfolioShadowSummary {
   }>;
 }
 
+export interface PortfolioShadowMismatchDetail {
+  readonly actualRoute: string;
+  readonly shadowRoute: string;
+  readonly actualDqContracts: number;
+  readonly shadowDqContracts: number;
+  readonly diffPct: number | null;
+  readonly actualBasisId: string | null;
+  readonly shadowBasisId: string | null;
+  readonly shadowResidualReason: string | null;
+  readonly createdAt: number;
+}
+
 function rate(numerator: number, denominator: number): number {
   if (denominator <= 0) return 0;
   return numerator / denominator;
@@ -97,4 +109,30 @@ export function summarizeShadowRows(rows: readonly PortfolioShadowReportRow[]): 
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count),
   };
+}
+
+export function extractShadowMismatchDetails(
+  rows: readonly PortfolioShadowReportRow[],
+  limit = 10
+): PortfolioShadowMismatchDetail[] {
+  return rows
+    .filter((row) =>
+      row.actualRoute !== row.shadowRoute ||
+      row.actualDqContracts !== row.shadowDqContracts ||
+      (row.actualBasisId ?? null) !== (row.shadowBasisId ?? null) ||
+      Math.abs(row.actualResidualContracts ?? 0) !== Math.abs(row.shadowResidualContracts ?? 0)
+    )
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, limit)
+    .map((row) => ({
+      actualRoute: row.actualRoute,
+      shadowRoute: row.shadowRoute,
+      actualDqContracts: row.actualDqContracts,
+      shadowDqContracts: row.shadowDqContracts,
+      diffPct: row.diffPct,
+      actualBasisId: row.actualBasisId,
+      shadowBasisId: row.shadowBasisId,
+      shadowResidualReason: row.shadowResidualReason,
+      createdAt: row.createdAt,
+    }));
 }

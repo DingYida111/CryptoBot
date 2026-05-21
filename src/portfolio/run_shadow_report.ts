@@ -1,6 +1,6 @@
 import { getDb } from "../monitor/storage.js";
 import type { PortfolioShadowReportRow } from "./shadow_report.js";
-import { summarizeShadowRows } from "./shadow_report.js";
+import { extractShadowMismatchDetails, summarizeShadowRows } from "./shadow_report.js";
 
 interface ShadowRowDb {
   actual_route: string;
@@ -13,6 +13,14 @@ interface ShadowRowDb {
   shadow_residual_contracts: number | null;
   shadow_residual_reason: string | null;
   diff_pct: number | null;
+  created_at: number;
+}
+
+interface ResidualRowDb {
+  source: string;
+  inst_id: string;
+  quantity: number;
+  reason_code: string;
   created_at: number;
 }
 
@@ -39,6 +47,13 @@ const rows = db.prepare(`
   LIMIT ?
 `).all(limit) as ShadowRowDb[];
 
+const residualRows = db.prepare(`
+  SELECT source, inst_id, quantity, reason_code, created_at
+  FROM portfolio_residuals
+  ORDER BY id DESC
+  LIMIT ?
+`).all(Math.min(limit, 20)) as ResidualRowDb[];
+
 const mapped: PortfolioShadowReportRow[] = rows.map((row) => ({
   actualRoute: row.actual_route,
   shadowRoute: row.shadow_route,
@@ -54,4 +69,10 @@ const mapped: PortfolioShadowReportRow[] = rows.map((row) => ({
 }));
 
 const summary = summarizeShadowRows(mapped);
-console.log(JSON.stringify({ limit, summary }, null, 2));
+const mismatches = extractShadowMismatchDetails(mapped, 10);
+console.log(JSON.stringify({
+  limit,
+  summary,
+  mismatches,
+  recentResiduals: residualRows,
+}, null, 2));
