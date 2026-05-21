@@ -27,17 +27,17 @@ import { config as dotenvConfig } from "dotenv";
 import { APP_CONFIG, getStartupRiskSummary } from "../config.js";
 import type { StrategySignal } from "../types.js";
 import type { Candle } from "../monitor/binance.js";
-import { insertPortfolioShadowLog, insertPortfolioSnapshot } from "../monitor/storage.js";
+import { insertPortfolioResidual, insertPortfolioShadowLog, insertPortfolioSnapshot } from "../monitor/storage.js";
 import { chopGridMetadata } from "../portfolio/adapters/chop_grid_adapter.js";
-import { okxPositionsToInstrumentPositions } from "../portfolio/adapters/strategy_runner_adapter.js";
+import { buildPortfolioStateFromRunner, okxPositionsToInstrumentPositions } from "../portfolio/adapters/strategy_runner_adapter.js";
 import { STRATEGY_BASIS_SPECS, decomposeTradeIncrement } from "../portfolio/basis.js";
 import { computeExposure, toInstrumentSpecMap } from "../portfolio/exposure.js";
 import { buildBtcSwapInstrumentSpecFromMeta, OKX_BTC_USDT_SWAP } from "../portfolio/instrument_spec.js";
 import { buildOptimizationRequest } from "../portfolio/optimizer_request.js";
 import { runOptimizerStub } from "../portfolio/optimizer_stub.js";
 import type { DecisionIntent } from "../portfolio/portfolio_types.js";
-import { buildPortfolioState } from "../portfolio/portfolio_state.js";
 import { BTC_DELTA, BTC_PERP_FUNDING_OKX } from "../portfolio/security_spec.js";
+import { buildResidualPosition } from "../portfolio/residual.js";
 
 dotenvConfig();
 
@@ -454,30 +454,32 @@ async function persistPortfolioArtifacts(
   const exposures = computeExposure(instrumentPositions, toInstrumentSpecMap([instrumentSpec]));
   const now = Date.now();
   const gridSnapshot = getChopGridSnapshot();
-  const portfolioState = buildPortfolioState({
+  const portfolioState = buildPortfolioStateFromRunner({
     asOfMs: now,
     instrumentPositions,
     securityExposures: exposures,
     cashBalances: cachedBalance === null ? {} : { USDT: cachedBalance },
     residualPositions: shadowIntent.basis.residualDqContracts === 0
       ? []
-      : [{
-          instrumentId: OKX_BTC_USDT_SWAP,
-          quantity: shadowIntent.basis.residualDqContracts,
-          reasonCode: shadowIntent.basis.residualReasonCode ?? ("UNROUTED_DECISION" as never),
-        }],
-    metadata: {
-      signalDirection: signal?.direction ?? "none",
-      signalRegime: signal?.regime ?? "NONE",
-      actualRoute: actualIntent.route,
-      shadowRoute: shadowIntent.route,
-      actualDqContracts: actualIntent.proposedDqContracts,
-      shadowDqContracts: shadowIntent.proposedDqContracts,
-      btcPrice: btcPrice ?? 0,
-      positionSide: position.side ?? "flat",
-      positionIsGrid: position.isGrid,
-      ...chopGridMetadata(gridSnapshot),
+      : [
+          buildResidualPosition(
+            OKX_BTC_USDT_SWAP,
+            shadowIntent.basis.residualDqContracts,
+            "UNROUTED_DECISION"
+          ),
+        ],
+    signalDirection: signal?.direction ?? "none",
+    signalRegime: signal?.regime ?? "NONE",
+    btcPrice: btcPrice ?? 0,
+    actualIntent,
+    shadowIntent,
+    positionSnapshot: {
+      side: position.side,
+      isGrid: position.isGrid,
+      entryPrice: position.entryPrice,
+      windowEndTimestamp: position.windowEndTimestamp,
     },
+    gridMetadata: chopGridMetadata(gridSnapshot),
   });
 
   const optimizationRequest = buildOptimizationRequest({
@@ -517,6 +519,11 @@ async function persistPortfolioArtifacts(
     shadowRoute: shadowIntent.route,
     actualDqContracts: actualIntent.proposedDqContracts,
     shadowDqContracts: shadowIntent.proposedDqContracts,
+    actualBasisId: actualIntent.basis.basisId,
+    shadowBasisId: shadowIntent.basis.basisId,
+    actualResidualContracts: actualIntent.basis.residualDqContracts,
+    shadowResidualContracts: shadowIntent.basis.residualDqContracts,
+    shadowResidualReason: shadowIntent.basis.residualReasonCode,
     diffPct,
     rawJson: JSON.stringify({
       actualIntent,
@@ -532,6 +539,23 @@ async function persistPortfolioArtifacts(
     }),
     createdAt: now,
   });
+
+  if (shadowIntent.basis.residualDqContracts !== 0) {
+    insertPortfolioResidual({
+      source: "strategy_runner",
+      instId: "BTC-USDT-SWAP",
+      quantity: shadowIntent.basis.residualDqContracts,
+      reasonCode: shadowIntent.basis.residualReasonCode ?? "UNROUTED_DECISION",
+      rawJson: JSON.stringify({
+        shadowIntent,
+        signal: signal ? {
+          direction: signal.direction,
+          regime: signal.regime,
+        } : null,
+      }),
+      createdAt: now,
+    });
+  }
 }
 
 function isExtremeVolatility(candles: Candle[], btcPrice: number): boolean {

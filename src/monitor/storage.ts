@@ -161,6 +161,11 @@ function initSchema(db: Database.Database): void {
       shadow_route TEXT NOT NULL,
       actual_dq_contracts REAL NOT NULL,
       shadow_dq_contracts REAL NOT NULL,
+      actual_basis_id TEXT,
+      shadow_basis_id TEXT,
+      actual_residual_contracts REAL,
+      shadow_residual_contracts REAL,
+      shadow_residual_reason TEXT,
       diff_pct REAL,
       raw_json TEXT NOT NULL,
       created_at INTEGER NOT NULL
@@ -168,6 +173,19 @@ function initSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_portfolio_shadow_log_created_at
       ON portfolio_shadow_log(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS portfolio_residuals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      inst_id TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      reason_code TEXT NOT NULL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_portfolio_residuals_created_at
+      ON portfolio_residuals(created_at DESC);
   `);
 
   const columns = new Set(
@@ -186,6 +204,23 @@ function initSchema(db: Database.Database): void {
   for (const [col, type] of migrateColumns) {
     if (!columns.has(col)) {
       db.exec(`ALTER TABLE window_summaries ADD COLUMN ${col} ${type}`);
+    }
+  }
+
+  const shadowColumns = new Set(
+    (db.prepare("PRAGMA table_info(portfolio_shadow_log)").all() as Array<{ name: string }>)
+      .map((row) => row.name)
+  );
+  const shadowMigrations: Array<[string, string]> = [
+    ["actual_basis_id", "TEXT"],
+    ["shadow_basis_id", "TEXT"],
+    ["actual_residual_contracts", "REAL"],
+    ["shadow_residual_contracts", "REAL"],
+    ["shadow_residual_reason", "TEXT"],
+  ];
+  for (const [col, type] of shadowMigrations) {
+    if (!shadowColumns.has(col)) {
+      db.exec(`ALTER TABLE portfolio_shadow_log ADD COLUMN ${col} ${type}`);
     }
   }
 }
@@ -262,7 +297,21 @@ export interface PortfolioShadowLogRecord {
   shadowRoute: string;
   actualDqContracts: number;
   shadowDqContracts: number;
+  actualBasisId?: string | null;
+  shadowBasisId?: string | null;
+  actualResidualContracts?: number | null;
+  shadowResidualContracts?: number | null;
+  shadowResidualReason?: string | null;
   diffPct?: number | null;
+  rawJson: string;
+  createdAt: number;
+}
+
+export interface PortfolioResidualRecord {
+  source: string;
+  instId: string;
+  quantity: number;
+  reasonCode: string;
   rawJson: string;
   createdAt: number;
 }
@@ -542,15 +591,39 @@ export function insertPortfolioShadowLog(record: PortfolioShadowLogRecord): numb
   const db = getDb();
   const result = db.prepare(`
     INSERT INTO portfolio_shadow_log (
-      source, actual_route, shadow_route, actual_dq_contracts, shadow_dq_contracts, diff_pct, raw_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      source, actual_route, shadow_route, actual_dq_contracts, shadow_dq_contracts,
+      actual_basis_id, shadow_basis_id, actual_residual_contracts, shadow_residual_contracts,
+      shadow_residual_reason, diff_pct, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.source,
     record.actualRoute,
     record.shadowRoute,
     record.actualDqContracts,
     record.shadowDqContracts,
+    record.actualBasisId ?? null,
+    record.shadowBasisId ?? null,
+    record.actualResidualContracts ?? null,
+    record.shadowResidualContracts ?? null,
+    record.shadowResidualReason ?? null,
     record.diffPct ?? null,
+    record.rawJson,
+    record.createdAt
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function insertPortfolioResidual(record: PortfolioResidualRecord): number {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO portfolio_residuals (
+      source, inst_id, quantity, reason_code, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    record.source,
+    record.instId,
+    record.quantity,
+    record.reasonCode,
     record.rawJson,
     record.createdAt
   );
