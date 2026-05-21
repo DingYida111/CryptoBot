@@ -1,11 +1,13 @@
 import { computeFundingArbitrageOpportunity, type FundingArbitrageConfig, type FundingArbitrageOpportunity } from "../carry/funding_arbitrage.js";
 import { fetchFundingRate, fetchInstrumentMeta, fetchTicker } from "../monitor/okx.js";
 import { insertFundingArbEvent, insertFundingArbOpportunity, insertPortfolioResidual, insertPortfolioSnapshot } from "../monitor/storage.js";
+import { buildRuntimeDecisionTrace, buildHoldTraceDecision, buildPackageTraceDecision } from "../portfolio/decision_trace.js";
 import { computeExposure, toInstrumentSpecMap } from "../portfolio/exposure.js";
-import { buildBtcSpotInstrumentSpecFromMeta, buildBtcSwapInstrumentSpecFromMeta } from "../portfolio/instrument_spec.js";
+import { buildBtcSpotInstrumentSpecFromMeta, buildBtcSwapInstrumentSpecFromMeta, OKX_BTC_USDT_SPOT, OKX_BTC_USDT_SWAP } from "../portfolio/instrument_spec.js";
 import { BTC_DELTA, BTC_PERP_FUNDING_OKX } from "../portfolio/security_spec.js";
 import { buildPortfolioStateFromFundingArb, fundingArbPositionsToInstrumentPositions } from "../portfolio/adapters/funding_arbitrage_adapter.js";
-import { buildFundingCarryPackageLedger } from "../portfolio/basis.js";
+import { buildFundingCarryPackageLedger, STRATEGY_BASIS_SPECS } from "../portfolio/basis.js";
+import { buildOptimizationRequest } from "../portfolio/optimizer_request.js";
 import {
   buySpot,
   getAssetBalance,
@@ -23,6 +25,7 @@ import type {
   ManagedStrategyStartResult,
   ManagedStrategySyncResult,
 } from "./managed_strategies.js";
+import type { RuntimeDecisionTraceDecision } from "../portfolio/portfolio_types.js";
 
 const FUNDING_ARB_PORTFOLIO_VERSION = "funding-arb-v1";
 
@@ -139,6 +142,68 @@ function toPortfolioTimestamp(value: number | null): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function buildFundingShadowDecision(input: {
+  readonly opportunity: FundingArbitrageOpportunity;
+  readonly packageState: FundingPackageState | null;
+  readonly maxHoldExceeded: boolean;
+  readonly fundingPassed: boolean;
+  readonly hedgeBroken: boolean;
+  readonly spotQtyBtc: number;
+  readonly swapContracts: number;
+  readonly contractMultiplier: number;
+}): RuntimeDecisionTraceDecision {
+  if (input.packageState) {
+    if (input.fundingPassed || input.maxHoldExceeded || input.hedgeBroken) {
+      return buildPackageTraceDecision({
+        route: "funding_carry_unwind",
+        reason: input.fundingPassed
+          ? "shadow_unwind_funding_passed"
+          : (input.maxHoldExceeded ? "shadow_unwind_max_hold" : "shadow_unwind_hedge_broken"),
+        packageLedger: buildFundingCarryPackageLedger({
+          spotDqBtc: -Math.max(0, input.spotQtyBtc),
+          swapDqContracts: Math.max(0, input.swapContracts),
+          contractMultiplier: input.contractMultiplier,
+          spotRoute: "close_long",
+          swapRoute: "close_short",
+          spotResidualReasonCode: "FUNDING_ARB_SHADOW_UNWIND_SPOT_RESIDUAL",
+          swapResidualReasonCode: "FUNDING_ARB_SHADOW_UNWIND_SWAP_RESIDUAL",
+        }),
+      });
+    }
+    return buildHoldTraceDecision({
+      reason: "shadow_hold_active_package",
+    });
+  }
+
+  if (input.opportunity.shouldEnter) {
+    return buildPackageTraceDecision({
+      route: "funding_carry_enter",
+      reason: input.opportunity.reason,
+      packageLedger: buildFundingCarryPackageLedger({
+        spotDqBtc: input.opportunity.candidateBtcSize,
+        swapDqContracts: -input.opportunity.candidateSwapContracts,
+        contractMultiplier: input.contractMultiplier,
+        spotRoute: "open_long",
+        swapRoute: "open_short",
+        spotResidualReasonCode: "FUNDING_ARB_SHADOW_ENTRY_SPOT_RESIDUAL",
+        swapResidualReasonCode: "FUNDING_ARB_SHADOW_ENTRY_SWAP_RESIDUAL",
+      }),
+      metadata: {
+        shouldEnter: input.opportunity.shouldEnter,
+        entryWindowOpen: input.opportunity.entryWindowOpen,
+      },
+    });
+  }
+
+  return buildHoldTraceDecision({
+    reason: input.opportunity.reason,
+    metadata: {
+      shouldEnter: input.opportunity.shouldEnter,
+      entryWindowOpen: input.opportunity.entryWindowOpen,
+    },
+  });
+}
+
 function recordTradePackageResiduals(input: {
   readonly source: string;
   readonly packageLedger: ReturnType<typeof buildFundingCarryPackageLedger>;
@@ -206,6 +271,8 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
     currentShortBtc: number;
     netDeltaBtc: number;
     usdtCashBalance: number;
+    actualDecision: RuntimeDecisionTraceDecision;
+    shadowDecision: RuntimeDecisionTraceDecision;
   }): void {
     const spotSpec = buildBtcSpotInstrumentSpecFromMeta({
       tickSz: 0,
@@ -269,6 +336,37 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
         forceValidationEntry: input.opportunity.forceValidationEntry,
       },
     });
+    const optimizationRequest = buildOptimizationRequest({
+      portfolioState,
+      basisSpecs: STRATEGY_BASIS_SPECS,
+      objectiveScores: {
+        carryEdgeUsd: input.opportunity.netCarryEdgeUsd,
+        fundingRate: input.opportunity.fundingRate,
+        basisBps: input.opportunity.basisBps,
+      },
+      instrumentBounds: {
+        [OKX_BTC_USDT_SPOT]: [0, Math.max(input.currentSpotBtc, input.opportunity.candidateBtcSize)],
+        [OKX_BTC_USDT_SWAP]: [
+          -Math.max(input.currentShortContracts, input.opportunity.candidateSwapContracts),
+          0,
+        ],
+      },
+      securityBounds: {
+        [BTC_DELTA]: [-Math.max(1, input.opportunity.candidateBtcSize), Math.max(1, input.opportunity.candidateBtcSize)],
+        [BTC_PERP_FUNDING_OKX]: [
+          -Math.max(1, input.opportunity.candidateBtcSize),
+          Math.max(1, input.opportunity.candidateBtcSize),
+        ],
+      },
+    });
+    const decisionTrace = buildRuntimeDecisionTrace({
+      traceVersion: FUNDING_ARB_PORTFOLIO_VERSION,
+      source: "local_funding_arbitrage",
+      portfolioState,
+      optimizationRequest,
+      actualDecision: input.actualDecision,
+      shadowDecision: input.shadowDecision,
+    });
 
     insertPortfolioSnapshot({
       source: "local_funding_arbitrage",
@@ -279,7 +377,9 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
       fundingExposure: portfolioState.securityExposures[BTC_PERP_FUNDING_OKX] ?? 0,
       regime: input.state.phase,
       rawJson: JSON.stringify({
+        decisionTrace,
         portfolioState,
+        optimizationRequest,
         opportunity: input.opportunity,
         packageState: input.state.packageState,
         activePackageLedger,
@@ -369,6 +469,7 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
     let currentShortBtc = currentShortContracts * swapCtVal;
     let netDeltaBtc = currentSpotBtc - currentShortBtc;
     let livePerpPositions = perpPositions;
+    let actualDecision = buildHoldTraceDecision({ reason: "actual_no_action" });
 
     const refreshLiveState = async (): Promise<void> => {
       const [freshBtcBalance, freshUsdtBalance, freshPerpPositions] = await Promise.all([
@@ -427,6 +528,26 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
       createdAt: now,
     });
 
+    const preActionExceededHold = state.packageState ? now - state.packageState.openedAtMs > maxHoldMs : false;
+    const preActionFundingPassed = state.packageState
+      ? (state.packageState.targetFundingTimeMs !== null && now >= state.packageState.targetFundingTimeMs)
+      : false;
+    const preActionHedgeBroken = state.packageState ? Math.abs(netDeltaBtc) > maxNetDeltaToleranceBtc : false;
+    const shadowDecision = buildFundingShadowDecision({
+      opportunity,
+      packageState: state.packageState,
+      maxHoldExceeded: preActionExceededHold,
+      fundingPassed: preActionFundingPassed,
+      hedgeBroken: preActionHedgeBroken,
+      spotQtyBtc: state.packageState
+        ? Math.max(0, currentSpotAvailBtc - state.packageState.preEntrySpotAvailBtc)
+        : opportunity.candidateBtcSize,
+      swapContracts: state.packageState
+        ? Math.max(0, currentShortContracts - state.packageState.preEntryShortContracts)
+        : opportunity.candidateSwapContracts,
+      contractMultiplier: swapCtVal,
+    });
+
     if (state.packageState) {
       state.phase = "holding_for_funding";
       const exceededHold = now - state.packageState.openedAtMs > maxHoldMs;
@@ -458,6 +579,18 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
           swapRoute: "close_short",
           spotResidualReasonCode: "FUNDING_ARB_UNWIND_SPOT_RESIDUAL",
           swapResidualReasonCode: "FUNDING_ARB_UNWIND_SWAP_RESIDUAL",
+        });
+        actualDecision = buildPackageTraceDecision({
+          route: "funding_carry_unwind",
+          reason: fundingPassed
+            ? "actual_unwind_funding_passed"
+            : (exceededHold ? "actual_unwind_max_hold" : "actual_unwind_hedge_broken"),
+          packageLedger: unwindTradePackageLedger,
+          metadata: {
+            fundingPassed,
+            exceededHold,
+            hedgeBroken,
+          },
         });
         if (spotSellQty > 0) {
           await sellSpot(state.packageState.spotInstId, spotSellQty.toFixed(8));
@@ -525,6 +658,15 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
               spotResidualReasonCode: "FUNDING_ARB_ENTRY_SPOT_RESIDUAL",
               swapResidualReasonCode: "FUNDING_ARB_ENTRY_SWAP_RESIDUAL",
             });
+            actualDecision = buildPackageTraceDecision({
+              route: "funding_carry_enter",
+              reason: "actual_enter_package",
+              packageLedger: entryTradePackageLedger,
+              metadata: {
+                validationOverride: opportunity.reason.startsWith("validation_override"),
+                shouldEnter: opportunity.shouldEnter,
+              },
+            });
             state.packageState = {
               spotInstId,
               perpInstId,
@@ -582,6 +724,8 @@ export class LocalFundingArbitrageController implements ManagedStrategyControlle
       currentShortBtc,
       netDeltaBtc,
       usdtCashBalance: currentUsdtCash,
+      actualDecision,
+      shadowDecision,
     });
 
     const positions: Record<string, unknown>[] = [

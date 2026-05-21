@@ -30,7 +30,9 @@ import type { Candle } from "../monitor/binance.js";
 import { insertPortfolioResidual, insertPortfolioShadowLog, insertPortfolioSnapshot } from "../monitor/storage.js";
 import { chopGridMetadata } from "../portfolio/adapters/chop_grid_adapter.js";
 import { buildPortfolioStateFromRunner, okxPositionsToInstrumentPositions } from "../portfolio/adapters/strategy_runner_adapter.js";
-import { STRATEGY_BASIS_SPECS, buildTradeLedgerEntry, decomposeTradeIncrement } from "../portfolio/basis.js";
+import { STRATEGY_BASIS_SPECS, buildTradeLedgerEntry } from "../portfolio/basis.js";
+import { buildDecisionIntent } from "../portfolio/decision_intent.js";
+import { buildRuntimeDecisionTrace, buildTraceDecisionFromIntent } from "../portfolio/decision_trace.js";
 import { computeExposure, toInstrumentSpecMap } from "../portfolio/exposure.js";
 import { buildBtcSwapInstrumentSpecFromMeta, OKX_BTC_USDT_SWAP } from "../portfolio/instrument_spec.js";
 import { buildOptimizationRequest } from "../portfolio/optimizer_request.js";
@@ -194,23 +196,6 @@ function floatingPnlPctFor(side: "long" | "short", entryPrice: number, btcPrice:
   return side === "long"
     ? (btcPrice - entryPrice) / entryPrice * 100
     : (entryPrice - btcPrice) / entryPrice * 100;
-}
-
-function buildDecisionIntent(
-  mode: DecisionIntent["mode"],
-  route: DecisionIntent["route"],
-  proposedDqContracts: number,
-  reason: string,
-  metadata: Readonly<Record<string, string | number | boolean>> = {}
-): DecisionIntent {
-  return {
-    mode,
-    route,
-    proposedDqContracts,
-    basis: decomposeTradeIncrement(proposedDqContracts),
-    reason,
-    metadata,
-  };
 }
 
 function computeSuggestedOpenContracts(
@@ -522,6 +507,22 @@ async function persistPortfolioArtifacts(
       [BTC_PERP_FUNDING_OKX]: [-MAX_POSITION_SIZE * CONTRACT_SIZE, MAX_POSITION_SIZE * CONTRACT_SIZE],
     },
   });
+  const decisionTrace = buildRuntimeDecisionTrace({
+    traceVersion: PORTFOLIO_SHADOW_VERSION,
+    source: "strategy_runner",
+    portfolioState,
+    optimizationRequest,
+    actualDecision: buildTraceDecisionFromIntent({
+      reason: actualIntent.reason,
+      intent: actualIntent,
+      tradeLedger: actualTradeLedger,
+    }),
+    shadowDecision: buildTraceDecisionFromIntent({
+      reason: shadowIntent.reason,
+      intent: shadowIntent,
+      tradeLedger: shadowTradeLedger,
+    }),
+  });
 
   insertPortfolioSnapshot({
     source: "strategy_runner",
@@ -532,6 +533,7 @@ async function persistPortfolioArtifacts(
     fundingExposure: portfolioState.securityExposures[BTC_PERP_FUNDING_OKX] ?? 0,
     regime: signal?.regime ?? null,
     rawJson: JSON.stringify({
+      decisionTrace,
       portfolioState,
       optimizationRequest,
       actualTradeLedger,
@@ -560,6 +562,7 @@ async function persistPortfolioArtifacts(
     shadowResidualReason: shadowIntent.basis.residualReasonCode,
     diffPct,
     rawJson: JSON.stringify({
+      decisionTrace,
       actualIntent,
       shadowIntent,
       actualTradeLedger,

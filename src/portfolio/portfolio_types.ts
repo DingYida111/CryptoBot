@@ -136,6 +136,12 @@ export interface TradePackageLedger {
   readonly explainsPackageExactly: boolean;
 }
 
+export type DecisionTraceRoute =
+  | DecisionRoute
+  | "package_hold"
+  | "funding_carry_enter"
+  | "funding_carry_unwind";
+
 export interface FundingArbPortfolioMetadata extends Readonly<Record<string, string | number | boolean>> {
   readonly phase: string;
   readonly lastReason: string;
@@ -167,6 +173,35 @@ export interface OptimizationRequest {
   readonly objectiveScores: Readonly<Record<string, number>>;
   readonly instrumentBounds: Readonly<Record<InstrumentId, readonly [number, number]>>;
   readonly securityBounds: Readonly<Record<SecurityId, readonly [number, number]>>;
+}
+
+export interface RuntimeDecisionTraceDecision {
+  readonly mode: DecisionIntent["mode"] | "package";
+  readonly route: DecisionTraceRoute;
+  readonly reason: string;
+  readonly proposedDqContracts: number | null;
+  readonly metadata: Readonly<Record<string, string | number | boolean>>;
+  readonly intent: DecisionIntent | null;
+  readonly tradeLedger: TradeLedgerEntry | null;
+  readonly packageLedger: TradePackageLedger | null;
+}
+
+export interface RuntimeDecisionTraceDiff {
+  readonly routeMatch: boolean | null;
+  readonly exactDqMatch: boolean | null;
+  readonly basisMatch: boolean | null;
+  readonly residualMatch: boolean | null;
+  readonly packageResidualRowDiff: number | null;
+}
+
+export interface RuntimeDecisionTrace {
+  readonly traceVersion: string;
+  readonly source: string;
+  readonly portfolioState: PortfolioState;
+  readonly optimizationRequest: OptimizationRequest;
+  readonly actualDecision: RuntimeDecisionTraceDecision;
+  readonly shadowDecision: RuntimeDecisionTraceDecision | null;
+  readonly diff: RuntimeDecisionTraceDiff;
 }
 
 export interface DecisionIntent {

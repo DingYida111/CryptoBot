@@ -9,6 +9,14 @@ interface PackageLedgerSummaryView {
   readonly residualNetQuantity: number;
 }
 
+interface DecisionTraceDiffView {
+  readonly routeMatch: boolean | null;
+  readonly exactDqMatch: boolean | null;
+  readonly basisMatch: boolean | null;
+  readonly residualMatch: boolean | null;
+  readonly packageResidualRowDiff: number | null;
+}
+
 interface CliOptions {
   readonly limit: number;
   readonly instanceId: string | null;
@@ -68,6 +76,18 @@ function toPackageLedgerSummary(value: unknown): PackageLedgerSummaryView | null
     residualRowCount: typeof residualSummary?.rowCount === "number" ? residualSummary.rowCount : 0,
     residualGrossQuantity: typeof residualSummary?.grossQuantity === "number" ? residualSummary.grossQuantity : 0,
     residualNetQuantity: typeof residualSummary?.netQuantity === "number" ? residualSummary.netQuantity : 0,
+  };
+}
+
+function toDecisionTraceDiff(value: unknown): DecisionTraceDiffView | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  return {
+    routeMatch: typeof row.routeMatch === "boolean" ? row.routeMatch : null,
+    exactDqMatch: typeof row.exactDqMatch === "boolean" ? row.exactDqMatch : null,
+    basisMatch: typeof row.basisMatch === "boolean" ? row.basisMatch : null,
+    residualMatch: typeof row.residualMatch === "boolean" ? row.residualMatch : null,
+    packageResidualRowDiff: typeof row.packageResidualRowDiff === "number" ? row.packageResidualRowDiff : null,
   };
 }
 
@@ -198,7 +218,11 @@ const recentEventPackageLedgers = (recentEvents as Array<Record<string, unknown>
 const recentSnapshotConsistency = (recentPortfolioSnapshots as Array<Record<string, unknown>>)
   .map((row) => {
     const parsed = safeParseJson(row.raw_json);
+    const decisionTrace = parsed?.decisionTrace && typeof parsed.decisionTrace === "object"
+      ? parsed.decisionTrace as Record<string, unknown>
+      : null;
     const activePackageLedger = toPackageLedgerSummary(parsed?.activePackageLedger);
+    const diff = toDecisionTraceDiff(decisionTrace?.diff);
     const portfolioState = parsed?.portfolioState && typeof parsed.portfolioState === "object"
       ? parsed.portfolioState as Record<string, unknown>
       : null;
@@ -211,6 +235,7 @@ const recentSnapshotConsistency = (recentPortfolioSnapshots as Array<Record<stri
       regime: row.regime,
       createdAt: row.created_at,
       netDeltaBtc: typeof metadata?.netDeltaBtc === "number" ? metadata.netDeltaBtc : null,
+      diff,
       activePackageLedger,
     };
   });
@@ -220,6 +245,8 @@ const snapshotConsistencySummary = {
   activePackageSnapshots: recentSnapshotConsistency.filter((row) => row.activePackageLedger !== null).length,
   residualSnapshots: recentSnapshotConsistency.filter((row) => (row.activePackageLedger?.residualRowCount ?? 0) > 0).length,
   nonExactSnapshots: recentSnapshotConsistency.filter((row) => row.activePackageLedger?.explainsPackageExactly === false).length,
+  routeMismatchSnapshots: recentSnapshotConsistency.filter((row) => row.diff?.routeMatch === false).length,
+  basisMismatchSnapshots: recentSnapshotConsistency.filter((row) => row.diff?.basisMatch === false).length,
 };
 
 console.log(JSON.stringify({
