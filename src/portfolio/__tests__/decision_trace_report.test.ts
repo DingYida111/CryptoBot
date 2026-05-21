@@ -9,6 +9,7 @@ import { OKX_BTC_USDT_SWAP } from "../instrument_spec.js";
 import { buildOptimizationRequest } from "../optimizer_request.js";
 import { buildPortfolioState } from "../portfolio_state.js";
 import { shouldPersistRuntimeTraceMessage } from "../../runtime/runtime_trace_observer.js";
+import { buildRuntimeActionExecutionPlan } from "../../runtime/runtime_action_executor.js";
 import { buildRuntimeActionsForMessage, summarizeRuntimeActions } from "../../runtime/runtime_actions.js";
 
 function basePortfolio() {
@@ -279,6 +280,8 @@ test("runtime action report marks cooldown duplicates without changing status", 
     affectedInstrumentIds: [OKX_BTC_USDT_SWAP],
     reason: "test",
     proposedAt: 1_000,
+    updatedAt: null,
+    executorNote: null,
   };
   const report = summarizeRuntimeActions([
     {
@@ -308,4 +311,60 @@ test("runtime action report marks cooldown duplicates without changing status", 
   assert.equal(report.summary.cooldownDuplicateCount, 1);
   assert.equal(report.cooldown.duplicates[0]?.id, 2);
   assert.equal(report.cooldown.duplicates[0]?.previousId, 1);
+});
+
+test("runtime action executor builds dry-run plan without enabling execution", () => {
+  const base = {
+    surface: "portfolio_shadow_log",
+    surfaceRowId: 1,
+    category: "instrument_error",
+    scope: "instrument",
+    source: "runtime_trace_fixture",
+    traceVersion: "test-v1",
+    status: "proposed",
+    executionEnabled: false,
+    affectedInstrumentIds: [OKX_BTC_USDT_SWAP],
+    reason: "test",
+    proposedAt: 1_000,
+    updatedAt: null,
+    executorNote: null,
+  };
+  const plan = buildRuntimeActionExecutionPlan({
+    rows: [
+      {
+        ...base,
+        id: 1,
+        messageCode: "ROUTE_MISMATCH",
+        actionType: "pause_instrument",
+        createdAt: 1_000,
+      },
+      {
+        ...base,
+        id: 2,
+        surfaceRowId: 2,
+        messageCode: "ROUTE_MISMATCH",
+        actionType: "pause_instrument",
+        createdAt: 1_500,
+      },
+      {
+        ...base,
+        id: 3,
+        messageCode: "DQ_MISMATCH",
+        category: "warning",
+        scope: "strategy",
+        actionType: "record_warning",
+        createdAt: 2_000,
+      },
+    ],
+    cooldownMs: 1_000,
+    ackDryRun: false,
+  });
+
+  assert.equal(plan.executionEnabled, false);
+  assert.equal(plan.totalCandidates, 3);
+  assert.equal(plan.wouldExecuteCount, 1);
+  assert.equal(plan.cooldownDuplicateCount, 1);
+  assert.equal(plan.recordOnlyCount, 1);
+  assert.equal(plan.rows[0]?.nextStatus, "dry_run_acknowledged");
+  assert.equal(plan.rows[1]?.nextStatus, "dry_run_cooldown_duplicate");
 });

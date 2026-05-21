@@ -48,6 +48,8 @@ Portfolio algebra shadow diagnostics:
 - `npm run report:runtime-traces -- 50 --persist-messages --persist-info` — 同时持久化正常 `info` 消息
 - `npm run report:runtime-traces -- 50 --persist-actions` — 将消息类别映射成 observe-only `runtime_actions` 建议动作
 - `npm run report:runtime-actions -- 50` — 汇总 observe-only action proposal，并标记 cooldown/dedupe 候选
+- `npm run run:runtime-action-executor -- 50` — dry-run 评估 proposed actions；默认不改状态、不交易
+- `npm run run:runtime-action-executor -- 50 --ack-dry-run` — 将 dry-run 结果写回 action status，仍不交易
 - `npm run report:runtime-traces -- 50 --notify-dry-run` — 打印将要通知的 error 类消息，不发送外部请求
 - `RUNTIME_NOTIFY_WEBHOOK_URL=https://... npm run report:runtime-traces -- 50 --notify` — 发送 `notify=true` 的消息到 webhook
 - `npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run` — 生成一条模拟 `instrument_error`，验证消息落库和 dry-run 通知链路，不触发任何交易动作
@@ -516,6 +518,10 @@ Funding arbitrage 示例：
   - 验证 trace -> message -> observe-only action proposal 落库
 - `npm run report:runtime-actions -- 20 --source runtime_trace_fixture`
   - 汇总建议动作，审计 action type / instrument 分布和 cooldown 重复候选
+- `npm run run:runtime-action-executor -- 20 --source runtime_trace_fixture`
+  - dry-run 展示未来执行器会处理哪些动作，不暂停、不平仓
+- `npm run run:runtime-action-executor -- 20 --source runtime_trace_fixture --ack-dry-run`
+  - 将 dry-run 状态写回本地 `runtime_actions`，仍不触发交易
 
 当前限制：
 

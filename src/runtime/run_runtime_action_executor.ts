@@ -1,13 +1,15 @@
-import { getDb } from "../monitor/storage.js";
-import { summarizeRuntimeActions, type RuntimeActionReportRow } from "./runtime_actions.js";
+import { getDb, updateRuntimeActionStatus } from "../monitor/storage.js";
+import { buildRuntimeActionExecutionPlan } from "./runtime_action_executor.js";
+import type { RuntimeActionReportRow } from "./runtime_actions.js";
 
 interface CliOptions {
   readonly limit: number;
   readonly source: string | null;
-  readonly status: string | null;
   readonly actionType: string | null;
   readonly instrumentId: string | null;
+  readonly status: string;
   readonly cooldownMs: number;
+  readonly ackDryRun: boolean;
 }
 
 interface RuntimeActionDbRow {
@@ -37,12 +39,13 @@ function parsePositiveNumber(value: string | undefined): number | null {
 }
 
 function parseCliOptions(argv: readonly string[]): CliOptions {
-  let limit = 200;
+  let limit = 50;
   let source: string | null = null;
-  let status: string | null = null;
   let actionType: string | null = null;
   let instrumentId: string | null = null;
+  let status = "proposed";
   let cooldownMs = 300_000;
+  let ackDryRun = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -51,14 +54,6 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
       const next = argv[index + 1];
       if (next) {
         source = next;
-        index += 1;
-      }
-      continue;
-    }
-    if (arg === "--status") {
-      const next = argv[index + 1];
-      if (next) {
-        status = next;
         index += 1;
       }
       continue;
@@ -79,12 +74,24 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
       }
       continue;
     }
+    if (arg === "--status") {
+      const next = argv[index + 1];
+      if (next) {
+        status = next;
+        index += 1;
+      }
+      continue;
+    }
     if (arg === "--cooldown-ms") {
       const parsed = parsePositiveNumber(argv[index + 1]);
       if (parsed !== null) {
         cooldownMs = Math.floor(parsed);
         index += 1;
       }
+      continue;
+    }
+    if (arg === "--ack-dry-run") {
+      ackDryRun = true;
       continue;
     }
     const parsed = parsePositiveNumber(arg);
@@ -96,10 +103,11 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
   return {
     limit,
     source,
-    status,
     actionType,
     instrumentId,
+    status,
     cooldownMs,
+    ackDryRun,
   };
 }
 
@@ -152,8 +160,8 @@ const filters: string[] = [];
 const params: Array<string | number> = [];
 
 addFilter(filters, params, "source", options.source);
-addFilter(filters, params, "status", options.status);
 addFilter(filters, params, "action_type", options.actionType);
+addFilter(filters, params, "status", options.status);
 params.push(options.limit);
 
 const whereClause = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
@@ -178,22 +186,40 @@ const rows = (db.prepare(`
     executor_note
   FROM runtime_actions
   ${whereClause}
-  ORDER BY id DESC
+  ORDER BY id ASC
   LIMIT ?
 `).all(...params) as RuntimeActionDbRow[])
   .map(toReportRow)
   .filter((row) => options.instrumentId === null || row.affectedInstrumentIds.includes(options.instrumentId));
 
-const report = summarizeRuntimeActions(rows, { cooldownMs: options.cooldownMs });
+const plan = buildRuntimeActionExecutionPlan({
+  rows,
+  cooldownMs: options.cooldownMs,
+  ackDryRun: options.ackDryRun,
+});
+
+const acknowledgedAt = Date.now();
+const acknowledgedCount = options.ackDryRun
+  ? plan.rows.filter((row) =>
+      updateRuntimeActionStatus({
+        id: row.id,
+        status: row.nextStatus,
+        updatedAt: acknowledgedAt,
+        executorNote: row.executorNote,
+      })
+    ).length
+  : 0;
 
 console.log(JSON.stringify({
   limit: options.limit,
   source: options.source,
-  status: options.status,
   actionType: options.actionType,
   instrumentId: options.instrumentId,
+  inputStatus: options.status,
   cooldownMs: options.cooldownMs,
-  summary: report.summary,
-  cooldown: report.cooldown,
-  recentActions: rows.slice(0, 50),
+  dryRun: true,
+  executionEnabled: false,
+  ackDryRun: options.ackDryRun,
+  acknowledgedCount,
+  plan,
 }, null, 2));

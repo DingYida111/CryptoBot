@@ -10,6 +10,11 @@ export type RuntimeActionType =
 
 export type RuntimeActionStatus = "proposed";
 
+export type RuntimeActionExecutorStatus =
+  | "proposed"
+  | "dry_run_acknowledged"
+  | "dry_run_cooldown_duplicate";
+
 export interface RuntimeProposedAction {
   readonly actionType: RuntimeActionType;
   readonly status: RuntimeActionStatus;
@@ -41,6 +46,8 @@ export interface RuntimeActionReportRow {
   readonly reason: string;
   readonly createdAt: number;
   readonly proposedAt: number;
+  readonly updatedAt: number | null;
+  readonly executorNote: string | null;
 }
 
 export interface RuntimeActionCooldownDuplicate {

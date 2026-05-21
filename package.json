@@ -18,6 +18,7 @@
     "report:funding-arb": "node --import tsx src/runtime/run_funding_arb_report.ts",
     "run:runtime-message-self-test": "node --import tsx src/runtime/run_runtime_message_self_test.ts",
     "run:runtime-trace-fixture": "node --import tsx src/runtime/run_runtime_trace_fixture.ts",
+    "run:runtime-action-executor": "node --import tsx src/runtime/run_runtime_action_executor.ts",
     "run:okx-connectivity": "node --import tsx src/runtime/run_okx_connectivity_check.ts",
     "run:funding-arb:validate": "node --import tsx src/runtime/run_funding_arbitrage_validation.ts",
     "run:okx-batch-funding-validate": "node --import tsx src/trade/run_okx_batch_funding_pair_validation.ts",

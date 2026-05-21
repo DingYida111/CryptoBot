@@ -247,6 +247,16 @@ All persisted action proposals currently use `status = proposed` and `execution_
 It also flags cooldown duplicates using the key `source | action_type | message_code | instrument`.
 This cooldown layer is audit-only and does not suppress persistence or execution.
 
+`run:runtime-action-executor` is the dry-run execution planner. It reads proposed actions and classifies them as:
+
+- `dry_run_would_execute`
+- `dry_run_record_only`
+- `dry_run_cooldown_duplicate`
+- `dry_run_unsupported`
+
+By default it does not write or trade. With `--ack-dry-run`, it only updates `runtime_actions.status` to
+`dry_run_acknowledged` or `dry_run_cooldown_duplicate`; it still does not call trading APIs.
+
 ## 4. Current Architectural Layers
 
 ### 4.1 Data Collection Layer
@@ -506,6 +516,12 @@ npm run report:runtime-traces -- 50 --persist-actions
 
 ```bash
 npm run report:runtime-actions -- 50
+```
+
+- dry-run proposed action execution:
+
+```bash
+npm run run:runtime-action-executor -- 50
 ```
 
 - optionally dry-run notification:

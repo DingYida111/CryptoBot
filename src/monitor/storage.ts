@@ -277,6 +277,8 @@ function initSchema(db: Database.Database): void {
       raw_json TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       proposed_at INTEGER NOT NULL,
+      updated_at INTEGER,
+      executor_note TEXT,
       UNIQUE(surface, surface_row_id, message_code, action_type)
     );
 
@@ -342,6 +344,20 @@ function initSchema(db: Database.Database): void {
   );
   if (!residualColumns.has("shadow_version")) {
     db.exec("ALTER TABLE portfolio_residuals ADD COLUMN shadow_version TEXT");
+  }
+
+  const runtimeActionColumns = new Set(
+    (db.prepare("PRAGMA table_info(runtime_actions)").all() as Array<{ name: string }>)
+      .map((row) => row.name)
+  );
+  const runtimeActionMigrations: Array<[string, string]> = [
+    ["updated_at", "INTEGER"],
+    ["executor_note", "TEXT"],
+  ];
+  for (const [col, type] of runtimeActionMigrations) {
+    if (!runtimeActionColumns.has(col)) {
+      db.exec(`ALTER TABLE runtime_actions ADD COLUMN ${col} ${type}`);
+    }
   }
 
   db.exec(`
@@ -517,6 +533,8 @@ export interface RuntimeActionRecord {
   rawJson: string;
   createdAt: number;
   proposedAt: number;
+  updatedAt?: number | null;
+  executorNote?: string | null;
 }
 
 export function insertTick(tick: Tick): void {
@@ -924,8 +942,8 @@ export function insertRuntimeAction(record: RuntimeActionRecord): boolean {
     INSERT OR IGNORE INTO runtime_actions (
       surface, surface_row_id, message_code, category, scope, source, trace_version,
       action_type, status, execution_enabled, affected_instrument_ids_json, reason,
-      raw_json, created_at, proposed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      raw_json, created_at, proposed_at, updated_at, executor_note
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.surface,
     record.surfaceRowId,
@@ -942,6 +960,28 @@ export function insertRuntimeAction(record: RuntimeActionRecord): boolean {
     record.rawJson,
     record.createdAt,
     record.proposedAt,
+    record.updatedAt ?? null,
+    record.executorNote ?? null,
+  );
+  return result.changes > 0;
+}
+
+export function updateRuntimeActionStatus(input: {
+  readonly id: number;
+  readonly status: string;
+  readonly updatedAt: number;
+  readonly executorNote?: string | null;
+}): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE runtime_actions
+    SET status = ?, updated_at = ?, executor_note = ?
+    WHERE id = ?
+  `).run(
+    input.status,
+    input.updatedAt,
+    input.executorNote ?? null,
+    input.id,
   );
   return result.changes > 0;
 }
