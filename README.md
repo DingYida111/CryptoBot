@@ -23,6 +23,7 @@
 - `STRATEGY_RUNTIME_ARCHITECTURE.md` — 当前托管策略运行时设计
 - `PORTFOLIO_ALGEBRA_FOUNDATION.md` — TypeScript-first 的 `instrument / security / strategy / residual` V1 落地方案
 - `PORTFOLIO_ALGEBRA_M1_BLUEPRINT.md` — `M1: Registry + Exposure Compiler` 的文件级施工蓝图
+- `PORTFOLIO_ALGEBRA_V1_MATH_NOTE.md` — V1 数学定义、单位约定和 worked example，避免后续实现跑偏
 
 Portfolio algebra shadow diagnostics:
 
