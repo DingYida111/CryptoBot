@@ -26,6 +26,7 @@
 - `PORTFOLIO_ALGEBRA_V1_MATH_NOTE.md` — V1 数学定义、单位约定和 worked example，避免后续实现跑偏
 - `PORTFOLIO_CARRY_AND_OKX_ARBITRAGE_REPORT.md` — OKX 官方套利产品栈对比、carry 建模建议、funding arbitrage worked example
 - `PORTFOLIO_CARRY_MODEL_NOTE.md` — carry 子模型的正式定义：funding / borrow / staking、realized vs expected、连续与离散结算
+- `FUNDING_ARBITRAGE_STRATEGY_SPEC.md` — 第一版 BTC 现货 + 合约资金费率套利策略规格：事件驱动、双腿执行、shadow-first
 
 Portfolio algebra shadow diagnostics:
 
