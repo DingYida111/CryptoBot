@@ -4,11 +4,12 @@
 
 ## 当前能力概览
 
-目前项目已经不只是一个简单的信号脚本，而是拆成了三层：
+目前项目已经不只是一个简单的信号脚本，而是拆成了四层：
 
 - `monitor`：采集 Polymarket / OKX 数据并写入 SQLite
 - `trade`：本地策略执行，当前包含 regime + directional trading + CHOP grid
 - `runtime`：统一管理本地策略与 OKX 托管策略，支持 benchmark、快照持久化、后续扩展 martingale / arbitrage
+- `portfolio`：统一 portfolio algebra、decision trace、runtime message 分类和 shadow health report
 
 当前已经接入的托管策略能力：
 
@@ -21,6 +22,8 @@
 - 持久化 `funding_arb_opportunities`
 - 持久化 `funding_arb_events`
 - 持久化 `portfolio_snapshots` for `local_funding_arbitrage`
+- 持久化 `runtime_messages` for `info / warning / instrument_error / major_error`
+- RuntimeDecisionTrace 统一 report / health verdict / observe-only notification
 
 基础设计文档：
 
@@ -206,8 +209,32 @@ CryptoBot/
 - 轮询多个 strategy instance
 - 持久化 run / snapshot / sub-order / position
 - 为 benchmark、dashboard、Agent 分析提供统一数据面
+- observe-only 扫描 RuntimeDecisionTrace，生成分类消息并可 dry-run 通知
 
-### 4. 可扩展设计
+### 4. Runtime Trace 与消息分类
+
+关键文件：
+
+- `src/portfolio/decision_trace.ts`
+- `src/portfolio/decision_trace_report.ts`
+- `src/runtime/runtime_trace_observer.ts`
+- `src/runtime/runtime_notifications.ts`
+
+职责：
+
+- 汇总 `RuntimeDecisionTrace`
+- 生成 `pass / warn / fail` health verdict
+- 将 trace alert 映射为运行时消息：
+  - `major_error`：未来用于全局停机和平仓
+  - `instrument_error`：未来用于清空并暂停单个 instrument
+  - `warning`：记录异常但继续运行
+  - `info`：正常成交、参数变更、资金变动等信息
+- 当前 observer 是 observe-only：
+  - 可以写入 `runtime_messages`
+  - 可以 dry-run 或 webhook 通知 `notify=true` 的消息
+  - 不暂停、不平仓、不改变交易执行路径
+
+### 5. 可扩展设计
 
 新增一个策略族时，原则上只需要三步：
 
@@ -233,6 +260,13 @@ Funding arbitrage 也已经按这一模式接入，不再是独立脚本：
   - `funding_arb_opportunities`
   - `funding_arb_events`
   - `portfolio_snapshots`
+
+Runtime trace observer 已按同一原则接入 supervisor：
+
+- 默认关闭
+- 开启后每轮 sync 后扫描 trace
+- 只做消息落库和通知
+- 不干预策略执行
 
 ## 技术栈
 
@@ -455,6 +489,24 @@ Funding arbitrage 示例：
 - `runtime_messages`
 
 这些表的目标是让分析建立在结构化数据上，而不是建立在日志文本上。
+
+## Runtime Trace 验证状态
+
+当前 observe-only 链路已经验证：
+
+- `npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run`
+  - 生成模拟 `instrument_error`
+  - 验证 `runtime_messages` 落库和 dry-run 通知
+- `npm run run:runtime-trace-fixture`
+  - 写入标准 `RuntimeDecisionTrace` fixture 到 `portfolio_shadow_log`
+  - 不访问交易接口
+- `npm run report:runtime-traces -- 20 --source runtime_trace_fixture --persist-messages --notify-dry-run`
+  - 验证 trace -> message -> persistence -> notification dry-run 闭环
+
+当前限制：
+
+- 本地环境访问 `www.okx.com:443` 存在连接超时，真实 funding arb shadow trace 尚未跑通。
+- 自动处理动作尚未接入。`major_error` / `instrument_error` 现在只分类、落库、通知，不自动暂停或平仓。
 
 ## 数据验证标准
 

@@ -208,6 +208,29 @@ Code:
 
 - `src/portfolio/decision_trace.ts`
 
+### 3.11 Runtime Message
+
+`RuntimeTraceMessage` is the operational message derived from trace alerts or normal trace health.
+
+Message categories:
+
+- `major_error`: future global halt / flatten-all class
+- `instrument_error`: future per-instrument pause / flatten class
+- `warning`: abnormal but non-blocking condition
+- `info`: normal operational event
+
+Current behavior:
+
+- messages can be persisted to `runtime_messages`
+- `notify=true` messages can be sent to console or webhook
+- no category currently pauses trading or flattens positions automatically
+
+Code:
+
+- `src/portfolio/decision_trace_report.ts`
+- `src/runtime/runtime_trace_observer.ts`
+- `src/runtime/runtime_notifications.ts`
+
 ## 4. Current Architectural Layers
 
 ### 4.1 Data Collection Layer
@@ -288,6 +311,27 @@ This layer should remain mostly pure and side-effect-light.
 
 It should not own exchange connectivity or order placement.
 
+### 4.6 Observe-Only Runtime Trace Observer
+
+Purpose:
+
+- scan persisted decision traces
+- summarize trace health
+- persist classified runtime messages
+- optionally notify `notify=true` messages
+
+Main area:
+
+- `src/runtime/runtime_trace_observer.ts`
+- `src/runtime/runtime_notifications.ts`
+
+Important boundary:
+
+- this layer is observe-only today
+- it does not pause strategies
+- it does not flatten positions
+- it does not change execution paths
+
 ## 5. Current Strategy Families
 
 ### 5.1 Local Directional + CHOP Grid
@@ -362,12 +406,14 @@ Use:
 - `portfolio_snapshots`
 - `portfolio_shadow_log`
 - `portfolio_residuals`
+- `runtime_messages`
 
 Use:
 
 - exposure snapshots
 - actual vs shadow comparison
 - residual accounting
+- classified runtime messages and notify decisions
 
 ### 6.3 Funding Arbitrage Tables
 
@@ -408,6 +454,45 @@ Use:
 - inspect entry/unwind events
 - inspect package consistency and decision trace diff
 
+### 7.3 Runtime Trace Report
+
+Command:
+
+```bash
+npm run report:runtime-traces -- 50
+```
+
+Use:
+
+- read `RuntimeDecisionTrace` from `portfolio_shadow_log` and `portfolio_snapshots`
+- produce trace summary, health, verdicts, messages, and notify candidates
+- optionally persist runtime messages:
+
+```bash
+npm run report:runtime-traces -- 50 --persist-messages
+```
+
+- optionally dry-run notification:
+
+```bash
+npm run report:runtime-traces -- 50 --notify-dry-run
+```
+
+### 7.4 Runtime Message Self Tests
+
+Commands:
+
+```bash
+npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run
+npm run run:runtime-trace-fixture
+```
+
+Use:
+
+- validate runtime message persistence
+- validate notification dry-run behavior
+- validate observe-only trace report path without placing orders
+
 ## 8. Current Algebra Scope
 
 The current algebra scope is intentionally narrow.
@@ -439,6 +524,8 @@ These statements should now be treated as true in the codebase.
 3. Funding carry is no longer an unstructured special case; it has a package ledger.
 4. `strategy_runner` and funding arbitrage now both produce runtime decision traces.
 5. The system is moving toward shadow-first replacement, not a big-bang refactor.
+6. Runtime trace summaries, health verdicts, classified messages, and observe-only notifications exist.
+7. Supervisor can run the runtime trace observer after sync when explicitly enabled.
 
 ## 10. What Is Not True Yet
 
@@ -448,7 +535,9 @@ These statements should not be assumed by humans or Agents.
 2. There is not yet one universal optimizer serving every strategy.
 3. `portfolio_shadow_log` is still mainly single-leg oriented.
 4. Multi-asset and synthetic spread algebra are not fully implemented.
-5. Runtime trace exists, but trace-level alerts and automatic gating are still early.
+5. Runtime trace alerting exists, but automatic execution gating is not active.
+6. `major_error` and `instrument_error` do not yet trigger automatic flattening or pausing.
+7. Real funding-arbitrage shadow trace validation currently depends on OKX connectivity and credentials; local fixture validation is available when OKX is unreachable.
 
 ## 11. Safe Extension Rules
 
@@ -484,6 +573,9 @@ If an Agent needs to modify behavior, these are the first places to inspect.
 - `src/portfolio/portfolio_types.ts`
 - `src/portfolio/basis.ts`
 - `src/portfolio/decision_trace.ts`
+- `src/portfolio/decision_trace_report.ts`
+- `src/runtime/runtime_trace_observer.ts`
+- `src/runtime/runtime_notifications.ts`
 - `src/portfolio/optimizer_stub.ts`
 
 ## 14. Purpose of This Knowledge Base
