@@ -70,6 +70,9 @@ export const StrategySupervisorEnvSchema = z.object({
   RUNTIME_ACTION_EXECUTOR_LIVE_EXECUTION_ENABLED: BooleanString,
   RUNTIME_ACTION_EXECUTOR_TRADING_ADAPTER_CONFIGURED: BooleanString,
   RUNTIME_ACTION_EXECUTOR_PERSIST_CONTROL_EFFECTS: BooleanString,
+  RUNTIME_AGENT_HEARTBEAT_ENABLED: TrueBooleanString,
+  RUNTIME_AGENT_ID: z.string().default("cryptobot-supervisor"),
+  RUNTIME_AGENT_ROLE: z.string().default("strategy_supervisor"),
   RUNTIME_NOTIFY_WEBHOOK_URL: z.string().optional(),
   MANAGED_STRATEGY_INSTANCES_JSON: z.string().optional(),
 });

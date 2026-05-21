@@ -233,6 +233,7 @@ Code:
 - `src/runtime/runtime_actions.ts`
 - `src/runtime/runtime_trace_observer.ts`
 - `src/runtime/runtime_notifications.ts`
+- `src/runtime/runtime_heartbeat.ts`
 
 Action proposal mapping:
 
@@ -301,6 +302,46 @@ These effects are currently plan-only. They do not write a control-state table o
 When `--persist-control-effects` or `RUNTIME_ACTION_EXECUTOR_PERSIST_CONTROL_EFFECTS=true` is enabled,
 ready effects are written to `runtime_control_effects` with `status = planned`.
 This remains an audit ledger and does not block strategy sync.
+
+### 3.12 Runtime Heartbeat And Watchdog
+
+`Runtime heartbeat` is the last-resort liveness signal for automated trading.
+
+The strategy supervisor writes an agent heartbeat before each sync cycle. A separate watchdog evaluates that heartbeat:
+
+- heartbeat age <= `staleAfterMs`: `info`
+- heartbeat age > `staleAfterMs`: `warning`
+- heartbeat age > `disconnectAfterMs`: `major_error`
+- active maintenance lease: suppresses disconnect escalation during planned deploy windows
+
+Current defaults:
+
+- stale threshold: 60 seconds
+- disconnect threshold: 120 seconds
+- maintenance grace: 120 seconds after lease expiry
+
+When disconnected, watchdog emits `AGENT_HEARTBEAT_DISCONNECTED` as `major_error`.
+Through the existing runtime action mapping this proposes:
+
+- `global_halt`
+- `flatten_all`
+
+Current behavior is observe-only:
+
+- heartbeat rows persist to `runtime_agent_heartbeats`
+- heartbeat history persists to `runtime_agent_heartbeat_events`
+- maintenance windows persist to `runtime_maintenance_leases`
+- watchdog checks persist to `runtime_watchdog_evaluations`
+- optional watchdog messages persist to `runtime_messages`
+- optional watchdog actions persist to `runtime_actions`
+- no OKX order, bot stop, pause, or flatten is executed yet
+
+Code:
+
+- `src/runtime/runtime_heartbeat.ts`
+- `src/runtime/run_runtime_heartbeat.ts`
+- `src/runtime/run_runtime_watchdog.ts`
+- `src/runtime/run_runtime_maintenance_lease.ts`
 
 ## 4. Current Architectural Layers
 

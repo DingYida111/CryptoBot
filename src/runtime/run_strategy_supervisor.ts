@@ -2,6 +2,7 @@ import { config as dotenvConfig } from "dotenv";
 import { BenchmarkEnvSchema, loadManagedStrategyInstances, StrategySupervisorEnvSchema } from "./supervisor_config.js";
 import { createStrategySupervisor } from "./strategy_supervisor.js";
 import { executeRuntimeActionDryRun } from "./runtime_action_executor.js";
+import { recordRuntimeAgentHeartbeat } from "./runtime_heartbeat.js";
 import { observeRuntimeTraces } from "./runtime_trace_observer.js";
 
 dotenvConfig();
@@ -23,7 +24,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function configuredManagedInstruments(): readonly string[] {
+  return [...new Set(instances.map((instance) => instance.instrument).filter(Boolean))].sort();
+}
+
+function configuredManagedStrategyInstances(): readonly string[] {
+  return [...new Set(instances.map((instance) => instance.instanceId).filter(Boolean))].sort();
+}
+
+function heartbeat(): void {
+  if (!supervisorEnv.RUNTIME_AGENT_HEARTBEAT_ENABLED) return;
+  recordRuntimeAgentHeartbeat({
+    agentId: supervisorEnv.RUNTIME_AGENT_ID,
+    role: supervisorEnv.RUNTIME_AGENT_ROLE,
+    metadata: {
+      managedStrategyInstances: configuredManagedStrategyInstances(),
+      managedInstruments: configuredManagedInstruments(),
+      process: "run_strategy_supervisor",
+    },
+  });
+}
+
 async function runOnce(): Promise<void> {
+  heartbeat();
+
   if (!supervisorEnv.STRATEGY_SUPERVISOR_ENABLED) {
     log("supervisor disabled");
     return;

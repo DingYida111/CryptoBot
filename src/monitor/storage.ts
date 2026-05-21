@@ -313,6 +313,70 @@ function initSchema(db: Database.Database): void {
       ON runtime_control_effects(target_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runtime_control_effects_status_created_at
       ON runtime_control_effects(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS runtime_agent_heartbeats (
+      agent_id TEXT PRIMARY KEY,
+      role TEXT NOT NULL,
+      pid INTEGER,
+      hostname TEXT,
+      commit_sha TEXT,
+      status TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      last_heartbeat_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_agent_heartbeats_updated_at
+      ON runtime_agent_heartbeats(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS runtime_agent_heartbeat_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      pid INTEGER,
+      hostname TEXT,
+      commit_sha TEXT,
+      status TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      heartbeat_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_agent_heartbeat_events_agent_created_at
+      ON runtime_agent_heartbeat_events(agent_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS runtime_maintenance_leases (
+      lease_id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      active INTEGER NOT NULL,
+      metadata_json TEXT NOT NULL,
+      starts_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_maintenance_leases_agent_expires_at
+      ON runtime_maintenance_leases(agent_id, expires_at DESC);
+
+    CREATE TABLE IF NOT EXISTS runtime_watchdog_evaluations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      heartbeat_age_ms INTEGER,
+      stale_after_ms INTEGER NOT NULL,
+      disconnect_after_ms INTEGER NOT NULL,
+      maintenance_active INTEGER NOT NULL,
+      maintenance_expires_at INTEGER,
+      message_code TEXT NOT NULL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_watchdog_evaluations_agent_created_at
+      ON runtime_watchdog_evaluations(agent_id, created_at DESC);
   `);
 
   const columns = new Set(
@@ -576,6 +640,68 @@ export interface RuntimeControlEffectRecord {
   rawJson: string;
   createdAt: number;
   observedAt: number;
+}
+
+export interface RuntimeAgentHeartbeatRecord {
+  agentId: string;
+  role: string;
+  pid?: number | null;
+  hostname?: string | null;
+  commitSha?: string | null;
+  status: string;
+  metadataJson: string;
+  heartbeatAt: number;
+  createdAt: number;
+}
+
+export interface RuntimeMaintenanceLeaseRecord {
+  leaseId: string;
+  agentId: string;
+  reason: string;
+  active: boolean;
+  metadataJson: string;
+  startsAt: number;
+  expiresAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RuntimeWatchdogEvaluationRecord {
+  agentId: string;
+  status: string;
+  heartbeatAgeMs?: number | null;
+  staleAfterMs: number;
+  disconnectAfterMs: number;
+  maintenanceActive: boolean;
+  maintenanceExpiresAt?: number | null;
+  messageCode: string;
+  rawJson: string;
+  createdAt: number;
+}
+
+export interface RuntimeAgentHeartbeatRow {
+  agent_id: string;
+  role: string;
+  pid: number | null;
+  hostname: string | null;
+  commit_sha: string | null;
+  status: string;
+  metadata_json: string;
+  last_heartbeat_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface RuntimeMaintenanceLeaseRow {
+  lease_id: string;
+  agent_id: string;
+  reason: string;
+  active: number;
+  metadata_json: string;
+  starts_at: number;
+  expires_at: number;
+  created_at: number;
+  updated_at: number;
 }
 
 export function insertTick(tick: Tick): void {
@@ -1050,6 +1176,146 @@ export function insertRuntimeControlEffect(record: RuntimeControlEffectRecord): 
     record.observedAt,
   );
   return result.changes > 0;
+}
+
+export function upsertRuntimeAgentHeartbeat(record: RuntimeAgentHeartbeatRecord): void {
+  const db = getDb();
+  const tx = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO runtime_agent_heartbeats (
+        agent_id, role, pid, hostname, commit_sha, status, metadata_json,
+        last_heartbeat_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(agent_id) DO UPDATE SET
+        role = excluded.role,
+        pid = excluded.pid,
+        hostname = excluded.hostname,
+        commit_sha = excluded.commit_sha,
+        status = excluded.status,
+        metadata_json = excluded.metadata_json,
+        last_heartbeat_at = excluded.last_heartbeat_at,
+        updated_at = excluded.updated_at
+    `).run(
+      record.agentId,
+      record.role,
+      record.pid ?? null,
+      record.hostname ?? null,
+      record.commitSha ?? null,
+      record.status,
+      record.metadataJson,
+      record.heartbeatAt,
+      record.createdAt,
+      record.createdAt,
+    );
+    db.prepare(`
+      INSERT INTO runtime_agent_heartbeat_events (
+        agent_id, role, pid, hostname, commit_sha, status, metadata_json,
+        heartbeat_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.agentId,
+      record.role,
+      record.pid ?? null,
+      record.hostname ?? null,
+      record.commitSha ?? null,
+      record.status,
+      record.metadataJson,
+      record.heartbeatAt,
+      record.createdAt,
+    );
+  });
+  tx();
+}
+
+export function getRuntimeAgentHeartbeat(agentId: string): RuntimeAgentHeartbeatRow | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT *
+    FROM runtime_agent_heartbeats
+    WHERE agent_id = ?
+  `).get(agentId) as RuntimeAgentHeartbeatRow | undefined;
+  return row ?? null;
+}
+
+export function upsertRuntimeMaintenanceLease(record: RuntimeMaintenanceLeaseRecord): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO runtime_maintenance_leases (
+      lease_id, agent_id, reason, active, metadata_json,
+      starts_at, expires_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(lease_id) DO UPDATE SET
+      agent_id = excluded.agent_id,
+      reason = excluded.reason,
+      active = excluded.active,
+      metadata_json = excluded.metadata_json,
+      starts_at = excluded.starts_at,
+      expires_at = excluded.expires_at,
+      updated_at = excluded.updated_at
+  `).run(
+    record.leaseId,
+    record.agentId,
+    record.reason,
+    record.active ? 1 : 0,
+    record.metadataJson,
+    record.startsAt,
+    record.expiresAt,
+    record.createdAt,
+    record.updatedAt,
+  );
+}
+
+export function deactivateRuntimeMaintenanceLease(input: {
+  readonly leaseId: string;
+  readonly updatedAt: number;
+}): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE runtime_maintenance_leases
+    SET active = 0, updated_at = ?
+    WHERE lease_id = ?
+  `).run(input.updatedAt, input.leaseId);
+  return result.changes > 0;
+}
+
+export function getActiveRuntimeMaintenanceLease(input: {
+  readonly agentId: string;
+  readonly now: number;
+}): RuntimeMaintenanceLeaseRow | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT *
+    FROM runtime_maintenance_leases
+    WHERE agent_id = ?
+      AND active = 1
+      AND starts_at <= ?
+      AND expires_at >= ?
+    ORDER BY expires_at DESC
+    LIMIT 1
+  `).get(input.agentId, input.now, input.now) as RuntimeMaintenanceLeaseRow | undefined;
+  return row ?? null;
+}
+
+export function insertRuntimeWatchdogEvaluation(record: RuntimeWatchdogEvaluationRecord): number {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO runtime_watchdog_evaluations (
+      agent_id, status, heartbeat_age_ms, stale_after_ms, disconnect_after_ms,
+      maintenance_active, maintenance_expires_at, message_code, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.agentId,
+    record.status,
+    record.heartbeatAgeMs ?? null,
+    record.staleAfterMs,
+    record.disconnectAfterMs,
+    record.maintenanceActive ? 1 : 0,
+    record.maintenanceExpiresAt ?? null,
+    record.messageCode,
+    record.rawJson,
+    record.createdAt,
+  );
+  return result.lastInsertRowid as number;
 }
 
 function rowToTick(row: any): Tick {

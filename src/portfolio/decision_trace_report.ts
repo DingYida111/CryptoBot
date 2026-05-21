@@ -97,11 +97,19 @@ export type RuntimeMessageCategory = "major_error" | "instrument_error" | "warni
 
 export type RuntimeMessageScope = "system" | "instrument" | "strategy";
 
+export type RuntimeMessageCode =
+  | RuntimeDecisionTraceAlertCode
+  | "TRACE_OK"
+  | "AGENT_HEARTBEAT_OK"
+  | "AGENT_HEARTBEAT_STALE"
+  | "AGENT_HEARTBEAT_DISCONNECTED"
+  | "AGENT_MAINTENANCE_ACTIVE";
+
 export interface RuntimeTraceMessage {
   readonly category: RuntimeMessageCategory;
   readonly scope: RuntimeMessageScope;
   readonly notify: boolean;
-  readonly code: RuntimeDecisionTraceAlertCode | "TRACE_OK";
+  readonly code: RuntimeMessageCode;
   readonly source: string;
   readonly traceVersion: string;
   readonly createdAt: number | null;

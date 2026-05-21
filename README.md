@@ -25,6 +25,7 @@
 - 持久化 `runtime_messages` for `warning / instrument_error / major_error`，`info` 需显式开启
 - 持久化 observe-only `runtime_actions` proposals，先审计不执行
 - RuntimeDecisionTrace 统一 report / health verdict / observe-only notification
+- Runtime agent heartbeat / watchdog / maintenance lease，作为自动交易最后保险的 observe-only 第一阶段
 
 基础设计文档：
 
@@ -54,6 +55,9 @@ Portfolio algebra shadow diagnostics:
 - `RUNTIME_NOTIFY_WEBHOOK_URL=https://... npm run report:runtime-traces -- 50 --notify` — 发送 `notify=true` 的消息到 webhook
 - `npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run` — 生成一条模拟 `instrument_error`，验证消息落库和 dry-run 通知链路，不触发任何交易动作
 - `npm run run:runtime-trace-fixture` — 写入一条标准 RuntimeDecisionTrace fixture 到 `portfolio_shadow_log`，用于无交易验证 observer/report 闭环
+- `npm run run:runtime-heartbeat -- --agent-id cryptobot-supervisor` — 写入一次 agent heartbeat
+- `npm run run:runtime-maintenance-lease -- --agent-id cryptobot-supervisor --duration-ms 300000 --reason planned_deploy` — 创建维护租约，部署窗口内 watchdog 不升级为清仓类断连
+- `npm run run:runtime-watchdog -- --agent-id cryptobot-supervisor --persist-messages --persist-actions --notify-dry-run` — 评估 heartbeat；超过断连阈值写入 `major_error` 和 observe-only `global_halt / flatten_all` proposal
 
 Supervisor observe-only runtime trace monitoring:
 
@@ -70,6 +74,20 @@ Supervisor observe-only runtime trace monitoring:
 - `RUNTIME_ACTION_EXECUTOR_LIVE_EXECUTION_ENABLED=true` — 仅用于 preflight 建模 live readiness，当前仍不执行
 - `RUNTIME_ACTION_EXECUTOR_TRADING_ADAPTER_CONFIGURED=true` — 仅用于 preflight 建模 adapter readiness
 - `RUNTIME_ACTION_EXECUTOR_PERSIST_CONTROL_EFFECTS=true` — 将 ready action 的 control effects 写入审计表，默认 false
+
+Runtime agent watchdog:
+
+- `RUNTIME_AGENT_HEARTBEAT_ENABLED=true` — supervisor 每轮 `runOnce` 前写 heartbeat，默认 true
+- `RUNTIME_AGENT_ID=cryptobot-supervisor` — heartbeat/watchdog 共同使用的 agent id
+- `RUNTIME_AGENT_ROLE=strategy_supervisor` — heartbeat role 标签
+- `RUNTIME_WATCHDOG_STALE_AFTER_MS=60000` — 超过 60 秒未见 heartbeat 记为 `warning`
+- `RUNTIME_WATCHDOG_DISCONNECT_AFTER_MS=120000` — 超过 120 秒未见 heartbeat 记为 `major_error`
+- `RUNTIME_WATCHDOG_MAINTENANCE_GRACE_MS=120000` — 维护租约到期后的额外宽限
+- `RUNTIME_WATCHDOG_PERSIST_MESSAGES=true` — 将 watchdog 消息写入 `runtime_messages`
+- `RUNTIME_WATCHDOG_PERSIST_ACTIONS=true` — 将 watchdog error 映射为 observe-only `runtime_actions`
+- `RUNTIME_WATCHDOG_NOTIFY_DRY_RUN=true` — 默认只打印通知，不发送外部请求
+
+当前 watchdog 仍是 observe-only：它会把 2 分钟以上断连转成 `major_error`，并提出 `global_halt / flatten_all`，但不会调用交易 API。后续接入 live adapter 后，才会把这些 proposal 变成真实 cancel / stop bot / flatten 操作。
 
 Funding arbitrage diagnostics:
 
@@ -506,6 +524,10 @@ Funding arbitrage 示例：
 - `portfolio_snapshots`（`source = local_funding_arbitrage`）
 - `runtime_messages`
 - `runtime_actions`
+- `runtime_agent_heartbeats`
+- `runtime_agent_heartbeat_events`
+- `runtime_maintenance_leases`
+- `runtime_watchdog_evaluations`
 
 这些表的目标是让分析建立在结构化数据上，而不是建立在日志文本上。
 
