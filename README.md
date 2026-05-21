@@ -24,6 +24,7 @@
 - `PORTFOLIO_ALGEBRA_FOUNDATION.md` — TypeScript-first 的 `instrument / security / strategy / residual` V1 落地方案
 - `PORTFOLIO_ALGEBRA_M1_BLUEPRINT.md` — `M1: Registry + Exposure Compiler` 的文件级施工蓝图
 - `PORTFOLIO_ALGEBRA_V1_MATH_NOTE.md` — V1 数学定义、单位约定和 worked example，避免后续实现跑偏
+- `PORTFOLIO_CARRY_AND_OKX_ARBITRAGE_REPORT.md` — OKX 官方套利产品栈对比、carry 建模建议、funding arbitrage worked example
 
 Portfolio algebra shadow diagnostics:
 
