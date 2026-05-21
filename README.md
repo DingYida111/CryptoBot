@@ -233,6 +233,19 @@ Funding arbitrage 也已经按这一模式接入，不再是独立脚本：
 
 ## 环境配置
 
+### Node.js 版本
+
+本项目建议使用 Node.js 20 LTS。仓库内已提供 `.nvmrc` 和 `.node-version`，支持 `nvm`、`fnm`、`nodenv`、`mise` 等工具自动选择版本。
+
+如果本机使用 Homebrew 的 `node@20`：
+
+```bash
+export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+npm rebuild better-sqlite3
+```
+
+不要使用 Node 25 运行本项目。`better-sqlite3` 是 native module，Node 大版本切换后需要重新编译，否则 report 脚本会出现 ABI 不匹配。
+
 ```bash
 cp .env.example .env
 # 编辑 .env 填入必要的 API key 和配置
