@@ -8,6 +8,7 @@ import { summarizeRuntimeDecisionTraces } from "../decision_trace_report.js";
 import { OKX_BTC_USDT_SWAP } from "../instrument_spec.js";
 import { buildOptimizationRequest } from "../optimizer_request.js";
 import { buildPortfolioState } from "../portfolio_state.js";
+import { shouldPersistRuntimeTraceMessage } from "../../runtime/runtime_trace_observer.js";
 
 function basePortfolio() {
   const portfolioState = buildPortfolioState({
@@ -173,4 +174,42 @@ test("runtime decision trace health passes when mismatches are inside thresholds
   assert.equal(report.messageSummary.infoCount, 1);
   assert.equal(report.messageSummary.notifyCount, 0);
   assert.equal(report.messages[0]?.category, "info");
+});
+
+test("runtime observer suppresses info persistence unless explicitly enabled", () => {
+  const { portfolioState, optimizationRequest } = basePortfolio();
+  const intent = buildDecisionIntent("trade", "open_long", 3, "actual_open");
+  const trace = buildRuntimeDecisionTrace({
+    traceVersion: "test-v1",
+    source: "strategy_runner",
+    portfolioState,
+    optimizationRequest,
+    actualDecision: buildTraceDecisionFromIntent({
+      reason: intent.reason,
+      intent,
+      tradeLedger: buildTradeLedgerEntry(
+        OKX_BTC_USDT_SWAP,
+        intent.route,
+        intent.proposedDqContracts,
+        intent.basis,
+      ),
+    }),
+    shadowDecision: buildTraceDecisionFromIntent({
+      reason: intent.reason,
+      intent,
+      tradeLedger: buildTradeLedgerEntry(
+        OKX_BTC_USDT_SWAP,
+        intent.route,
+        intent.proposedDqContracts,
+        intent.basis,
+      ),
+    }),
+  });
+
+  const report = summarizeRuntimeDecisionTraces([{ trace, createdAt: 40 }]);
+  const message = report.messages[0];
+
+  assert.equal(message?.category, "info");
+  assert.equal(message ? shouldPersistRuntimeTraceMessage(message) : null, false);
+  assert.equal(message ? shouldPersistRuntimeTraceMessage(message, true) : null, true);
 });

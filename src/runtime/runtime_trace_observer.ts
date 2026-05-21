@@ -17,6 +17,7 @@ export interface RuntimeTraceObserverOptions {
   readonly allVersions?: boolean;
   readonly thresholds?: RuntimeDecisionTraceAlertThresholds;
   readonly persistMessages: boolean;
+  readonly persistInfoMessages?: boolean;
   readonly notifyDryRun: boolean;
   readonly notify: boolean;
   readonly webhookUrl?: string | null;
@@ -32,6 +33,8 @@ export interface RuntimeTraceObserverResult {
     readonly enabled: boolean;
     readonly insertedCount: number;
     readonly candidateCount: number;
+    readonly persistedCandidateCount: number;
+    readonly suppressedInfoCount: number;
   };
   readonly notification: {
     readonly enabled: boolean;
@@ -146,6 +149,13 @@ function persistMessage(row: RuntimeTraceMessageWithSurface, emittedAt: number):
   });
 }
 
+export function shouldPersistRuntimeTraceMessage(
+  message: RuntimeTraceMessage,
+  persistInfoMessages = false,
+): boolean {
+  return persistInfoMessages || message.category !== "info";
+}
+
 export async function observeRuntimeTraces(
   options: RuntimeTraceObserverOptions,
 ): Promise<RuntimeTraceObserverResult> {
@@ -187,10 +197,13 @@ export async function observeRuntimeTraces(
       rowId: traces[index]?.rowId ?? 0,
     }))
   );
+  const persistableMessages = messagesWithSurface.filter((row) =>
+    shouldPersistRuntimeTraceMessage(row.message, options.persistInfoMessages ?? false)
+  );
 
   const emittedAt = Date.now();
   const insertedMessages = options.persistMessages
-    ? messagesWithSurface.filter((row) => persistMessage(row, emittedAt))
+    ? persistableMessages.filter((row) => persistMessage(row, emittedAt))
     : [];
   const notificationMessages = (options.persistMessages ? insertedMessages : messagesWithSurface)
     .map((row) => row.message)
@@ -213,6 +226,8 @@ export async function observeRuntimeTraces(
       enabled: options.persistMessages,
       insertedCount: insertedMessages.length,
       candidateCount: messagesWithSurface.length,
+      persistedCandidateCount: persistableMessages.length,
+      suppressedInfoCount: messagesWithSurface.length - persistableMessages.length,
     },
     notification: {
       enabled: options.notify || options.notifyDryRun,

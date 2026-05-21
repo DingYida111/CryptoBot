@@ -56,6 +56,7 @@ async function runOnce(): Promise<void> {
     const observerResult = await observeRuntimeTraces({
       limit: supervisorEnv.RUNTIME_TRACE_OBSERVER_LIMIT,
       persistMessages: supervisorEnv.RUNTIME_TRACE_OBSERVER_PERSIST_MESSAGES,
+      persistInfoMessages: supervisorEnv.RUNTIME_TRACE_OBSERVER_PERSIST_INFO,
       notifyDryRun: supervisorEnv.RUNTIME_TRACE_OBSERVER_NOTIFY_DRY_RUN,
       notify: supervisorEnv.RUNTIME_TRACE_OBSERVER_NOTIFY,
       webhookUrl: supervisorEnv.RUNTIME_NOTIFY_WEBHOOK_URL ?? null,
@@ -65,6 +66,8 @@ async function runOnce(): Promise<void> {
       traces: observerResult.surfaces.extractedTraces,
       insertedMessages: observerResult.messagePersistence.insertedCount,
       messageCandidates: observerResult.messagePersistence.candidateCount,
+      persistedMessageCandidates: observerResult.messagePersistence.persistedCandidateCount,
+      suppressedInfoMessages: observerResult.messagePersistence.suppressedInfoCount,
       notifyCandidates: observerResult.notification.candidateCount,
       notificationEnabled: observerResult.notification.enabled,
       notificationDryRun: observerResult.notification.dryRun,

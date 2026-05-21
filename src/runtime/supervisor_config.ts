@@ -59,6 +59,7 @@ export const StrategySupervisorEnvSchema = z.object({
   RUNTIME_TRACE_OBSERVER_ENABLED: BooleanString,
   RUNTIME_TRACE_OBSERVER_LIMIT: z.coerce.number().int().positive().default(200),
   RUNTIME_TRACE_OBSERVER_PERSIST_MESSAGES: TrueBooleanString,
+  RUNTIME_TRACE_OBSERVER_PERSIST_INFO: BooleanString,
   RUNTIME_TRACE_OBSERVER_NOTIFY_DRY_RUN: TrueBooleanString,
   RUNTIME_TRACE_OBSERVER_NOTIFY: BooleanString,
   RUNTIME_NOTIFY_WEBHOOK_URL: z.string().optional(),

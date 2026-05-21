@@ -221,7 +221,8 @@ Message categories:
 
 Current behavior:
 
-- messages can be persisted to `runtime_messages`
+- `warning`, `instrument_error`, and `major_error` messages can be persisted to `runtime_messages`
+- `info` persistence is opt-in to avoid turning normal trace health into database noise
 - `notify=true` messages can be sent to console or webhook
 - no category currently pauses trading or flattens positions automatically
 
@@ -470,6 +471,12 @@ Use:
 
 ```bash
 npm run report:runtime-traces -- 50 --persist-messages
+```
+
+- include normal `info` messages only when explicitly requested:
+
+```bash
+npm run report:runtime-traces -- 50 --persist-messages --persist-info
 ```
 
 - optionally dry-run notification:
