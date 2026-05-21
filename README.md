@@ -63,6 +63,10 @@ Supervisor observe-only runtime trace monitoring:
 - `RUNTIME_TRACE_OBSERVER_PERSIST_ACTIONS=true` — 写入建议动作到 `runtime_actions`，默认 false
 - `RUNTIME_TRACE_OBSERVER_NOTIFY_DRY_RUN=true` — 只打印将通知的消息，默认 true
 - `RUNTIME_TRACE_OBSERVER_NOTIFY=true` — 真实发送 `notify=true` 的消息；不会暂停、不平仓、不改变交易路径
+- `RUNTIME_ACTION_EXECUTOR_ENABLED=true` — supervisor 每轮运行 dry-run action executor，默认 false
+- `RUNTIME_ACTION_EXECUTOR_ACK_DRY_RUN=true` — 将 dry-run 结果写回 `runtime_actions.status`，默认 false
+- `RUNTIME_ACTION_EXECUTOR_LIMIT=50` — 每轮最多处理 proposed actions
+- `RUNTIME_ACTION_EXECUTOR_COOLDOWN_MS=300000` — dry-run cooldown/dedupe 窗口
 
 Funding arbitrage diagnostics:
 

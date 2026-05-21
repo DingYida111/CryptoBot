@@ -1,6 +1,7 @@
 import { config as dotenvConfig } from "dotenv";
 import { BenchmarkEnvSchema, loadManagedStrategyInstances, StrategySupervisorEnvSchema } from "./supervisor_config.js";
 import { createStrategySupervisor } from "./strategy_supervisor.js";
+import { executeRuntimeActionDryRun } from "./runtime_action_executor.js";
 import { observeRuntimeTraces } from "./runtime_trace_observer.js";
 
 dotenvConfig();
@@ -75,6 +76,26 @@ async function runOnce(): Promise<void> {
       notificationEnabled: observerResult.notification.enabled,
       notificationDryRun: observerResult.notification.dryRun,
       health: observerResult.traceReport.health.status,
+    });
+  }
+
+  if (supervisorEnv.RUNTIME_ACTION_EXECUTOR_ENABLED) {
+    const executorResult = executeRuntimeActionDryRun({
+      limit: supervisorEnv.RUNTIME_ACTION_EXECUTOR_LIMIT,
+      cooldownMs: supervisorEnv.RUNTIME_ACTION_EXECUTOR_COOLDOWN_MS,
+      ackDryRun: supervisorEnv.RUNTIME_ACTION_EXECUTOR_ACK_DRY_RUN,
+      status: "proposed",
+    });
+    log("runtime action executor dry-run result", {
+      observeOnly: true,
+      executionEnabled: executorResult.executionEnabled,
+      ackDryRun: executorResult.ackDryRun,
+      acknowledgedCount: executorResult.acknowledgedCount,
+      totalCandidates: executorResult.plan.totalCandidates,
+      wouldExecuteCount: executorResult.plan.wouldExecuteCount,
+      recordOnlyCount: executorResult.plan.recordOnlyCount,
+      cooldownDuplicateCount: executorResult.plan.cooldownDuplicateCount,
+      unsupportedCount: executorResult.plan.unsupportedCount,
     });
   }
 }

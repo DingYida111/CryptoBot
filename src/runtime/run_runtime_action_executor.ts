@@ -1,6 +1,4 @@
-import { getDb, updateRuntimeActionStatus } from "../monitor/storage.js";
-import { buildRuntimeActionExecutionPlan } from "./runtime_action_executor.js";
-import type { RuntimeActionReportRow } from "./runtime_actions.js";
+import { executeRuntimeActionDryRun } from "./runtime_action_executor.js";
 
 interface CliOptions {
   readonly limit: number;
@@ -10,26 +8,6 @@ interface CliOptions {
   readonly status: string;
   readonly cooldownMs: number;
   readonly ackDryRun: boolean;
-}
-
-interface RuntimeActionDbRow {
-  readonly id: number;
-  readonly surface: string;
-  readonly surface_row_id: number;
-  readonly message_code: string;
-  readonly category: string;
-  readonly scope: string;
-  readonly source: string;
-  readonly trace_version: string | null;
-  readonly action_type: string;
-  readonly status: string;
-  readonly execution_enabled: number;
-  readonly affected_instrument_ids_json: string;
-  readonly reason: string;
-  readonly created_at: number;
-  readonly proposed_at: number;
-  readonly updated_at: number | null;
-  readonly executor_note: string | null;
 }
 
 function parsePositiveNumber(value: string | undefined): number | null {
@@ -111,115 +89,5 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
   };
 }
 
-function parseInstrumentIds(value: string): readonly string[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((row): row is string => typeof row === "string").sort();
-  } catch {
-    return [];
-  }
-}
-
-function toReportRow(row: RuntimeActionDbRow): RuntimeActionReportRow {
-  return {
-    id: row.id,
-    surface: row.surface,
-    surfaceRowId: row.surface_row_id,
-    messageCode: row.message_code,
-    category: row.category,
-    scope: row.scope,
-    source: row.source,
-    traceVersion: row.trace_version,
-    actionType: row.action_type,
-    status: row.status,
-    executionEnabled: row.execution_enabled === 1,
-    affectedInstrumentIds: parseInstrumentIds(row.affected_instrument_ids_json),
-    reason: row.reason,
-    createdAt: row.created_at,
-    proposedAt: row.proposed_at,
-    updatedAt: row.updated_at,
-    executorNote: row.executor_note,
-  };
-}
-
-function addFilter(
-  filters: string[],
-  params: Array<string | number>,
-  column: string,
-  value: string | null,
-): void {
-  if (value === null) return;
-  filters.push(`${column} = ?`);
-  params.push(value);
-}
-
 const options = parseCliOptions(process.argv.slice(2));
-const db = getDb();
-const filters: string[] = [];
-const params: Array<string | number> = [];
-
-addFilter(filters, params, "source", options.source);
-addFilter(filters, params, "action_type", options.actionType);
-addFilter(filters, params, "status", options.status);
-params.push(options.limit);
-
-const whereClause = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
-const rows = (db.prepare(`
-  SELECT
-    id,
-    surface,
-    surface_row_id,
-    message_code,
-    category,
-    scope,
-    source,
-    trace_version,
-    action_type,
-    status,
-    execution_enabled,
-    affected_instrument_ids_json,
-    reason,
-    created_at,
-    proposed_at,
-    updated_at,
-    executor_note
-  FROM runtime_actions
-  ${whereClause}
-  ORDER BY id ASC
-  LIMIT ?
-`).all(...params) as RuntimeActionDbRow[])
-  .map(toReportRow)
-  .filter((row) => options.instrumentId === null || row.affectedInstrumentIds.includes(options.instrumentId));
-
-const plan = buildRuntimeActionExecutionPlan({
-  rows,
-  cooldownMs: options.cooldownMs,
-  ackDryRun: options.ackDryRun,
-});
-
-const acknowledgedAt = Date.now();
-const acknowledgedCount = options.ackDryRun
-  ? plan.rows.filter((row) =>
-      updateRuntimeActionStatus({
-        id: row.id,
-        status: row.nextStatus,
-        updatedAt: acknowledgedAt,
-        executorNote: row.executorNote,
-      })
-    ).length
-  : 0;
-
-console.log(JSON.stringify({
-  limit: options.limit,
-  source: options.source,
-  actionType: options.actionType,
-  instrumentId: options.instrumentId,
-  inputStatus: options.status,
-  cooldownMs: options.cooldownMs,
-  dryRun: true,
-  executionEnabled: false,
-  ackDryRun: options.ackDryRun,
-  acknowledgedCount,
-  plan,
-}, null, 2));
+console.log(JSON.stringify(executeRuntimeActionDryRun(options), null, 2));
