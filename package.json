@@ -16,6 +16,7 @@
     "report:funding-arb": "node --import tsx src/runtime/run_funding_arb_report.ts",
     "run:funding-arb:validate": "node --import tsx src/runtime/run_funding_arbitrage_validation.ts",
     "run:okx-batch-funding-validate": "node --import tsx src/trade/run_okx_batch_funding_pair_validation.ts",
+    "run:okx-batch-funding-watch": "node --import tsx src/trade/run_okx_batch_funding_pair_watcher.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },

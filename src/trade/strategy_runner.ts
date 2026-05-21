@@ -57,6 +57,9 @@ const CHOP_GRID_CONFIG = {
   recenterPct: APP_CONFIG.chopGridRecenterPct,
   breakoutPct: APP_CONFIG.chopGridBreakoutPct,
   cooldownMs: APP_CONFIG.chopGridCooldownMs,
+  reentryCooldownMs: APP_CONFIG.chopGridReentryCooldownMs,
+  lossReentryCooldownMs: APP_CONFIG.chopGridLossReentryCooldownMs,
+  sameWindowReentryBlock: APP_CONFIG.chopGridSameWindowReentryBlock,
 } as const;
 const REGIME_MODE = APP_CONFIG.regimeMode;
 const MIN_REGIME_SCORE = APP_CONFIG.minRegimeScore;
@@ -1031,7 +1034,7 @@ async function tryManageGridPosition(signal: StrategySignal, btcPrice: number, e
       btcPrice,
       windowEnd: endTimestamp,
     });
-    await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", btcPrice, true);
+    await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, "CHOP", btcPrice, true, endTimestamp);
     resetPosition();
     return true;
   }
@@ -1046,7 +1049,7 @@ async function tryManageGridPosition(signal: StrategySignal, btcPrice: number, e
     });
   }
 
-  const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false);
+  const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false, endTimestamp);
   if (!gridResult.active) {
     resetPosition();
     return true;
@@ -1123,7 +1126,7 @@ async function main(): Promise<void> {
           if (!ENABLE_TRADING) {
             log(`[SIM][GRID] Would run long-inventory chop grid | regime=${signal.regime} | BTC=$${btcPrice}`);
           } else {
-            const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false);
+            const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false, endTimestamp);
             log(`[GRID] ${gridResult.reason} | active=${gridResult.active}`);
             if (gridResult.openedSeed) {
               position = {

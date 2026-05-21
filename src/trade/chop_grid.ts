@@ -12,6 +12,9 @@ export interface ChopGridConfig {
   recenterPct: number;
   breakoutPct: number;
   cooldownMs: number;
+  reentryCooldownMs: number;
+  lossReentryCooldownMs: number;
+  sameWindowReentryBlock: boolean;
 }
 
 export interface ChopGridSnapshot {
@@ -23,6 +26,10 @@ export interface ChopGridSnapshot {
   lastActionAt: number;
   pendingOrderCount: number;
   reason: string;
+  reentryBlockedUntil: number;
+  lastExitAt: number;
+  lastExitReason: string | null;
+  lastExitWindowEndTs: number | null;
 }
 
 export interface ChopGridStats {
@@ -45,6 +52,10 @@ const FLAT_SNAPSHOT: ChopGridSnapshot = {
   lastActionAt: 0,
   pendingOrderCount: 0,
   reason: "flat",
+  reentryBlockedUntil: 0,
+  lastExitAt: 0,
+  lastExitReason: null,
+  lastExitWindowEndTs: null,
 };
 
 interface PersistedOpenLot {
@@ -63,6 +74,10 @@ interface GridStateRow {
   last_action_at: number;
   pending_order_count: number;
   reason: string;
+  reentry_blocked_until?: number;
+  last_exit_at?: number;
+  last_exit_reason?: string | null;
+  last_exit_window_end_ts?: number | null;
   open_lots_json: string;
   round_trip_count: number;
   win_count: number;
@@ -136,6 +151,8 @@ let stats: ChopGridStats = {
   feeRatioTotal: 0,
   avgFeeRatio: null,
 };
+let lastRealizedExitTime = 0;
+let lastRealizedExitNetPnl: number | null = null;
 let schemaReady = false;
 
 function logGrid(msg: string): void {
@@ -242,6 +259,10 @@ function getDbReady() {
         last_action_at INTEGER NOT NULL,
         pending_order_count INTEGER NOT NULL,
         reason TEXT NOT NULL,
+        reentry_blocked_until INTEGER NOT NULL DEFAULT 0,
+        last_exit_at INTEGER NOT NULL DEFAULT 0,
+        last_exit_reason TEXT,
+        last_exit_window_end_ts INTEGER,
         open_lots_json TEXT NOT NULL,
         round_trip_count INTEGER NOT NULL DEFAULT 0,
         win_count INTEGER NOT NULL DEFAULT 0,
@@ -307,6 +328,21 @@ function getDbReady() {
       CREATE INDEX IF NOT EXISTS idx_chop_grid_exits_inst_time
         ON chop_grid_exits(inst_id, exit_time DESC);
     `);
+    const stateColumns = new Set(
+      (db.prepare("PRAGMA table_info(chop_grid_state)").all() as Array<{ name: string }>)
+        .map((row) => row.name),
+    );
+    const migrations: Array<[string, string]> = [
+      ["reentry_blocked_until", "INTEGER NOT NULL DEFAULT 0"],
+      ["last_exit_at", "INTEGER NOT NULL DEFAULT 0"],
+      ["last_exit_reason", "TEXT"],
+      ["last_exit_window_end_ts", "INTEGER"],
+    ];
+    for (const [column, type] of migrations) {
+      if (!stateColumns.has(column)) {
+        db.exec(`ALTER TABLE chop_grid_state ADD COLUMN ${column} ${type}`);
+      }
+    }
     schemaReady = true;
     loadState(db);
   }
@@ -340,6 +376,10 @@ function loadState(db = getDb()): void {
     lastActionAt: row.last_action_at,
     pendingOrderCount: row.pending_order_count,
     reason: row.reason,
+    reentryBlockedUntil: row.reentry_blocked_until ?? 0,
+    lastExitAt: row.last_exit_at ?? 0,
+    lastExitReason: row.last_exit_reason ?? null,
+    lastExitWindowEndTs: row.last_exit_window_end_ts ?? null,
   };
   try {
     openLots = JSON.parse(row.open_lots_json) as PersistedOpenLot[];
@@ -369,10 +409,12 @@ function persistState(): void {
   const stmt = db.prepare(`
     INSERT INTO chop_grid_state (
       inst_id, active, side, anchor_price, entry_price, inventory,
-      last_action_at, pending_order_count, reason, open_lots_json,
+      last_action_at, pending_order_count, reason,
+      reentry_blocked_until, last_exit_at, last_exit_reason, last_exit_window_end_ts,
+      open_lots_json,
       round_trip_count, win_count, loss_count, gross_pnl, fee_total, net_pnl, fee_ratio_total,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(inst_id) DO UPDATE SET
       active = excluded.active,
       side = excluded.side,
@@ -382,6 +424,10 @@ function persistState(): void {
       last_action_at = excluded.last_action_at,
       pending_order_count = excluded.pending_order_count,
       reason = excluded.reason,
+      reentry_blocked_until = excluded.reentry_blocked_until,
+      last_exit_at = excluded.last_exit_at,
+      last_exit_reason = excluded.last_exit_reason,
+      last_exit_window_end_ts = excluded.last_exit_window_end_ts,
       open_lots_json = excluded.open_lots_json,
       round_trip_count = excluded.round_trip_count,
       win_count = excluded.win_count,
@@ -402,6 +448,10 @@ function persistState(): void {
     snapshot.lastActionAt,
     snapshot.pendingOrderCount,
     snapshot.reason,
+    snapshot.reentryBlockedUntil,
+    snapshot.lastExitAt,
+    snapshot.lastExitReason,
+    snapshot.lastExitWindowEndTs,
     JSON.stringify(openLots),
     stats.roundTripCount,
     stats.winCount,
@@ -414,9 +464,75 @@ function persistState(): void {
   );
 }
 
-function reset(): void {
-  snapshot = { ...FLAT_SNAPSHOT };
+function flatten(reason: string): void {
+  snapshot = {
+    ...FLAT_SNAPSHOT,
+    reason,
+    reentryBlockedUntil: snapshot.reentryBlockedUntil,
+    lastExitAt: snapshot.lastExitAt,
+    lastExitReason: snapshot.lastExitReason,
+    lastExitWindowEndTs: snapshot.lastExitWindowEndTs,
+  };
   openLots = [];
+  persistState();
+}
+
+function isAdverseExitReason(reason: string | null | undefined): boolean {
+  return reason === "force_exit"
+    || reason === "breakout_stop"
+    || reason === "inventory_depleted_loss"
+    || reason === "position_missing_after_loss";
+}
+
+export function computeReentryBlockUntil(
+  config: Pick<ChopGridConfig, "reentryCooldownMs" | "lossReentryCooldownMs">,
+  exitReason: string,
+  netPnl: number | null,
+  now: number,
+): number {
+  const adverse = isAdverseExitReason(exitReason) || (netPnl !== null && netPnl < 0);
+  return now + (adverse ? config.lossReentryCooldownMs : config.reentryCooldownMs);
+}
+
+export function resolveReentryGate(
+  gridSnapshot: Pick<ChopGridSnapshot, "reentryBlockedUntil" | "lastExitReason" | "lastExitWindowEndTs">,
+  config: Pick<ChopGridConfig, "sameWindowReentryBlock">,
+  now: number,
+  currentWindowEndTimestamp: number | null,
+): { blocked: boolean; reason: string } {
+  if (gridSnapshot.reentryBlockedUntil > now) {
+    return {
+      blocked: true,
+      reason: `reentry_cooldown_until_${gridSnapshot.reentryBlockedUntil}`,
+    };
+  }
+  if (
+    config.sameWindowReentryBlock
+    && currentWindowEndTimestamp !== null
+    && gridSnapshot.lastExitWindowEndTs !== null
+    && currentWindowEndTimestamp === gridSnapshot.lastExitWindowEndTs
+    && isAdverseExitReason(gridSnapshot.lastExitReason)
+  ) {
+    return {
+      blocked: true,
+      reason: `same_window_reentry_block:${gridSnapshot.lastExitReason ?? "unknown"}`,
+    };
+  }
+  return { blocked: false, reason: "reentry_open" };
+}
+
+function applyReentryBlock(
+  config: ChopGridConfig,
+  exitReason: string,
+  netPnl: number | null,
+  currentWindowEndTimestamp: number | null,
+): void {
+  const now = Date.now();
+  snapshot.reentryBlockedUntil = computeReentryBlockUntil(config, exitReason, netPnl, now);
+  snapshot.lastExitAt = now;
+  snapshot.lastExitReason = exitReason;
+  snapshot.lastExitWindowEndTs = currentWindowEndTimestamp;
+  snapshot.reason = exitReason;
   persistState();
 }
 
@@ -637,12 +753,29 @@ function shouldRefreshGridOrders(
 
 async function syncGridPosition(
   instId: string,
-  options?: { adoptIfNeeded?: boolean; pending?: PendingGridOrder[] }
+  config: ChopGridConfig | null,
+  options?: { adoptIfNeeded?: boolean; pending?: PendingGridOrder[]; windowEndTimestamp?: number | null }
 ): Promise<void> {
   const positions = await getPositions(instId);
   const active = positions.find((p) => parseInt(p.pos) !== 0 && p.posSide !== "short");
   if (!active) {
-    if (snapshot.active) reset();
+    if (snapshot.active) {
+      const recentRealized = Date.now() - lastRealizedExitTime <= Math.max(60_000, config?.cooldownMs ?? 60_000);
+      const inferredReason = recentRealized
+        ? ((lastRealizedExitNetPnl ?? 0) < 0 ? "inventory_depleted_loss" : "inventory_depleted")
+        : (snapshot.lastExitReason && isAdverseExitReason(snapshot.lastExitReason)
+          ? "position_missing_after_loss"
+          : "position_missing");
+      if (config) {
+        applyReentryBlock(
+          config,
+          inferredReason,
+          recentRealized ? lastRealizedExitNetPnl : null,
+          options?.windowEndTimestamp ?? null,
+        );
+      }
+      flatten(inferredReason);
+    }
     return;
   }
 
@@ -741,6 +874,8 @@ function bookRealizedGridExit(
   if (matchedQty <= 0) return;
   const totalFee = buyFee + sellFee;
   const netPnl = grossPnl - totalFee;
+  lastRealizedExitTime = fillTime;
+  lastRealizedExitNetPnl = netPnl;
   const feeToProfit = grossPnl > 0 ? totalFee / grossPnl : Infinity;
   const buyVwap = weightedBuyPx / matchedQty;
   stats.roundTripCount += 1;
@@ -944,7 +1079,8 @@ export async function maybeRunChopGrid(
   config: ChopGridConfig,
   regime: "CHOP" | "RANGE",
   currentBtcPrice: number | null,
-  forceExit = false
+  forceExit = false,
+  currentWindowEndTimestamp: number | null = null,
 ): Promise<{ active: boolean; reason: string; openedSeed: boolean }> {
   const meta = await fetchBtcSwapMeta();
   const price = currentBtcPrice ?? (await fetchBtcPrice());
@@ -954,7 +1090,7 @@ export async function maybeRunChopGrid(
   const contractValue = contractValueFromMeta(meta);
 
   await auditRecentGridFills(instId, contractValue);
-  await syncGridPosition(instId);
+  await syncGridPosition(instId, config, { windowEndTimestamp: currentWindowEndTimestamp });
 
   if (forceExit) {
     const auditStart = currentAuditTotals();
@@ -986,11 +1122,16 @@ export async function maybeRunChopGrid(
       net_pnl_delta: delta.net_pnl_delta,
       active_before: snapshotBefore.active ? 1 : 0,
     });
-    reset();
+    applyReentryBlock(config, "force_exit", delta.net_pnl_delta, currentWindowEndTimestamp);
+    flatten("force_exit");
     return { active: false, reason: "force_exit", openedSeed: false };
   }
 
   if (!snapshot.active) {
+    const reentryGate = resolveReentryGate(snapshot, config, Date.now(), currentWindowEndTimestamp);
+    if (reentryGate.blocked) {
+      return { active: false, reason: reentryGate.reason, openedSeed: false };
+    }
     await cancelAllGridOrders(instId);
     const now = Date.now();
     const seedSize = Math.max(1, config.orderSize * Math.max(1, config.seedMultiplier));
@@ -1007,6 +1148,10 @@ export async function maybeRunChopGrid(
       lastActionAt: now,
       pendingOrderCount: 0,
       reason: `init_${regime}`,
+      reentryBlockedUntil: snapshot.reentryBlockedUntil,
+      lastExitAt: snapshot.lastExitAt,
+      lastExitReason: snapshot.lastExitReason,
+      lastExitWindowEndTs: snapshot.lastExitWindowEndTs,
     };
     logTradeEvent("GRID", "seed_opened", {
       instId,
@@ -1061,7 +1206,8 @@ export async function maybeRunChopGrid(
       breakoutPct: config.breakoutPct,
       inventory: snapshot.inventory,
     });
-    reset();
+    applyReentryBlock(config, "breakout_stop", delta.net_pnl_delta, currentWindowEndTimestamp);
+    flatten("breakout_stop");
     return { active: false, reason: "breakout_stop", openedSeed: false };
   }
 
@@ -1107,6 +1253,6 @@ export async function maybeRunChopGrid(
 export async function primeChopGridPosition(instId: string): Promise<boolean> {
   getDbReady();
   const pending = await getPendingOrders(instId) as PendingGridOrder[];
-  await syncGridPosition(instId, { adoptIfNeeded: true, pending });
+  await syncGridPosition(instId, null, { adoptIfNeeded: true, pending });
   return snapshot.active && snapshot.side === "long";
 }

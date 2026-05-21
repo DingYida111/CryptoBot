@@ -37,6 +37,13 @@ const BaseEnvSchema = z.object({
   CHOP_GRID_RECENTER_PCT: z.coerce.number().positive().default(0.012),
   CHOP_GRID_BREAKOUT_PCT: z.coerce.number().positive().default(0.035),
   CHOP_GRID_COOLDOWN_MS: z.coerce.number().int().positive().default(60_000),
+  CHOP_GRID_REENTRY_COOLDOWN_MS: z.coerce.number().int().positive().default(180_000),
+  CHOP_GRID_LOSS_REENTRY_COOLDOWN_MS: z.coerce.number().int().positive().default(900_000),
+  CHOP_GRID_SAME_WINDOW_REENTRY_BLOCK: z
+    .string()
+    .optional()
+    .default("true")
+    .transform((v) => v === "true"),
   REGIME_MODE: RegimeModeSchema.default("adaptive"),
   MIN_REGIME_SCORE: z.coerce.number().min(0).max(1).default(0.6),
   TREND_WIDTH_MIN_PCT: z.coerce.number().min(0).default(0.04),
@@ -110,6 +117,9 @@ export function getStartupRiskSummary(): string[] {
     `chopGridOrderSize=${env.CHOP_GRID_ORDER_SIZE}`,
     `chopGridSeedMultiplier=${env.CHOP_GRID_SEED_MULTIPLIER}`,
     `chopGridMaxInventory=${env.CHOP_GRID_MAX_INVENTORY}`,
+    `chopGridReentryCooldownMs=${env.CHOP_GRID_REENTRY_COOLDOWN_MS}`,
+    `chopGridLossReentryCooldownMs=${env.CHOP_GRID_LOSS_REENTRY_COOLDOWN_MS}`,
+    `chopGridSameWindowReentryBlock=${env.CHOP_GRID_SAME_WINDOW_REENTRY_BLOCK}`,
     `regimeMode=${env.REGIME_MODE}`,
     `minRegimeScore=${env.MIN_REGIME_SCORE}`,
   ];
@@ -159,6 +169,9 @@ export const APP_CONFIG = {
   chopGridRecenterPct: env.CHOP_GRID_RECENTER_PCT,
   chopGridBreakoutPct: env.CHOP_GRID_BREAKOUT_PCT,
   chopGridCooldownMs: env.CHOP_GRID_COOLDOWN_MS,
+  chopGridReentryCooldownMs: env.CHOP_GRID_REENTRY_COOLDOWN_MS,
+  chopGridLossReentryCooldownMs: env.CHOP_GRID_LOSS_REENTRY_COOLDOWN_MS,
+  chopGridSameWindowReentryBlock: env.CHOP_GRID_SAME_WINDOW_REENTRY_BLOCK,
   regimeMode: env.REGIME_MODE,
   minRegimeScore: env.MIN_REGIME_SCORE,
   trendWidthMinPct: env.TREND_WIDTH_MIN_PCT,
