@@ -25,6 +25,57 @@ export interface RuntimeProposedAction {
   readonly rawMessage: RuntimeTraceMessage;
 }
 
+export interface RuntimeActionReportRow {
+  readonly id: number;
+  readonly surface: string;
+  readonly surfaceRowId: number;
+  readonly messageCode: string;
+  readonly category: string;
+  readonly scope: string;
+  readonly source: string;
+  readonly traceVersion: string | null;
+  readonly actionType: string;
+  readonly status: string;
+  readonly executionEnabled: boolean;
+  readonly affectedInstrumentIds: readonly string[];
+  readonly reason: string;
+  readonly createdAt: number;
+  readonly proposedAt: number;
+}
+
+export interface RuntimeActionCooldownDuplicate {
+  readonly id: number;
+  readonly duplicateKey: string;
+  readonly previousId: number;
+  readonly elapsedMs: number;
+  readonly actionType: string;
+  readonly messageCode: string;
+  readonly source: string;
+  readonly instrumentId: string;
+  readonly createdAt: number;
+}
+
+export interface RuntimeActionReport {
+  readonly summary: {
+    readonly totalActions: number;
+    readonly proposedCount: number;
+    readonly executionEnabledCount: number;
+    readonly cooldownDuplicateCount: number;
+    readonly cooldownDuplicateRate: number;
+    readonly byActionType: ReadonlyArray<{ readonly actionType: string; readonly count: number }>;
+    readonly byCategory: ReadonlyArray<{ readonly category: string; readonly count: number }>;
+    readonly byStatus: ReadonlyArray<{ readonly status: string; readonly count: number }>;
+    readonly bySource: ReadonlyArray<{ readonly source: string; readonly count: number }>;
+    readonly byInstrument: ReadonlyArray<{ readonly instrumentId: string; readonly count: number }>;
+  };
+  readonly cooldown: {
+    readonly windowMs: number;
+    readonly duplicateCount: number;
+    readonly duplicates: readonly RuntimeActionCooldownDuplicate[];
+    readonly topDuplicateKeys: ReadonlyArray<{ readonly duplicateKey: string; readonly count: number }>;
+  };
+}
+
 function action(input: {
   readonly actionType: RuntimeActionType;
   readonly message: RuntimeTraceMessage;
@@ -106,4 +157,98 @@ export function buildRuntimeActionsForMessage(
       reason: "Info message is recorded only when normal operational message persistence is enabled.",
     }),
   ];
+}
+
+function countByLabel<K extends string>(
+  values: readonly string[],
+  label: K,
+): ReadonlyArray<{ readonly [P in K]: string } & { readonly count: number }> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([value, count]) => ({ [label]: value, count }) as { [P in K]: string } & { count: number })
+    .sort((a, b) => b.count - a.count || a[label].localeCompare(b[label]));
+}
+
+function instrumentKeys(row: RuntimeActionReportRow): readonly string[] {
+  return row.affectedInstrumentIds.length > 0 ? row.affectedInstrumentIds : ["system"];
+}
+
+function duplicateKey(row: RuntimeActionReportRow, instrumentId: string): string {
+  return [
+    row.source,
+    row.actionType,
+    row.messageCode,
+    instrumentId,
+  ].join("|");
+}
+
+export function findRuntimeActionCooldownDuplicates(
+  rows: readonly RuntimeActionReportRow[],
+  cooldownMs: number,
+): readonly RuntimeActionCooldownDuplicate[] {
+  if (cooldownMs <= 0) return [];
+
+  const lastSeen = new Map<string, RuntimeActionReportRow>();
+  const duplicates: RuntimeActionCooldownDuplicate[] = [];
+  const ordered = [...rows].sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+
+  for (const row of ordered) {
+    for (const instrumentId of instrumentKeys(row)) {
+      const key = duplicateKey(row, instrumentId);
+      const previous = lastSeen.get(key);
+      if (previous) {
+        const elapsedMs = row.createdAt - previous.createdAt;
+        if (elapsedMs >= 0 && elapsedMs <= cooldownMs) {
+          duplicates.push({
+            id: row.id,
+            duplicateKey: key,
+            previousId: previous.id,
+            elapsedMs,
+            actionType: row.actionType,
+            messageCode: row.messageCode,
+            source: row.source,
+            instrumentId,
+            createdAt: row.createdAt,
+          });
+        }
+      }
+      lastSeen.set(key, row);
+    }
+  }
+
+  return duplicates.sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
+}
+
+export function summarizeRuntimeActions(
+  rows: readonly RuntimeActionReportRow[],
+  options: { readonly cooldownMs?: number } = {},
+): RuntimeActionReport {
+  const cooldownMs = options.cooldownMs ?? 300_000;
+  const duplicates = findRuntimeActionCooldownDuplicates(rows, cooldownMs);
+  const duplicateIds = new Set(duplicates.map((row) => row.id));
+  const instrumentIds = rows.flatMap((row) => instrumentKeys(row));
+
+  return {
+    summary: {
+      totalActions: rows.length,
+      proposedCount: rows.filter((row) => row.status === "proposed").length,
+      executionEnabledCount: rows.filter((row) => row.executionEnabled).length,
+      cooldownDuplicateCount: duplicateIds.size,
+      cooldownDuplicateRate: rows.length > 0 ? duplicateIds.size / rows.length : 0,
+      byActionType: countByLabel(rows.map((row) => row.actionType), "actionType"),
+      byCategory: countByLabel(rows.map((row) => row.category), "category"),
+      byStatus: countByLabel(rows.map((row) => row.status), "status"),
+      bySource: countByLabel(rows.map((row) => row.source), "source"),
+      byInstrument: countByLabel(instrumentIds, "instrumentId"),
+    },
+    cooldown: {
+      windowMs: cooldownMs,
+      duplicateCount: duplicates.length,
+      duplicates,
+      topDuplicateKeys: countByLabel(duplicates.map((row) => row.duplicateKey), "duplicateKey").slice(0, 20),
+    },
+  };
 }

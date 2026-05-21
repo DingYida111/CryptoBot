@@ -14,6 +14,7 @@
     "test:carry": "node --import tsx --test src/carry/**/*.test.ts",
     "report:portfolio-shadow": "node --import tsx src/portfolio/run_shadow_report.ts",
     "report:runtime-traces": "node --import tsx src/portfolio/run_runtime_trace_report.ts",
+    "report:runtime-actions": "node --import tsx src/runtime/run_runtime_action_report.ts",
     "report:funding-arb": "node --import tsx src/runtime/run_funding_arb_report.ts",
     "run:runtime-message-self-test": "node --import tsx src/runtime/run_runtime_message_self_test.ts",
     "run:runtime-trace-fixture": "node --import tsx src/runtime/run_runtime_trace_fixture.ts",

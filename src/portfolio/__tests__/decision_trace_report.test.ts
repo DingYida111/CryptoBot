@@ -9,7 +9,7 @@ import { OKX_BTC_USDT_SWAP } from "../instrument_spec.js";
 import { buildOptimizationRequest } from "../optimizer_request.js";
 import { buildPortfolioState } from "../portfolio_state.js";
 import { shouldPersistRuntimeTraceMessage } from "../../runtime/runtime_trace_observer.js";
-import { buildRuntimeActionsForMessage } from "../../runtime/runtime_actions.js";
+import { buildRuntimeActionsForMessage, summarizeRuntimeActions } from "../../runtime/runtime_actions.js";
 
 function basePortfolio() {
   const portfolioState = buildPortfolioState({
@@ -262,4 +262,50 @@ test("runtime actions map errors to observe-only proposed interventions", () => 
     instrumentError ? buildRuntimeActionsForMessage(instrumentError)[0]?.executionEnabled : null,
     false,
   );
+});
+
+test("runtime action report marks cooldown duplicates without changing status", () => {
+  const base = {
+    surface: "portfolio_shadow_log",
+    surfaceRowId: 1,
+    messageCode: "ROUTE_MISMATCH",
+    category: "instrument_error",
+    scope: "instrument",
+    source: "runtime_trace_fixture",
+    traceVersion: "test-v1",
+    actionType: "pause_instrument",
+    status: "proposed",
+    executionEnabled: false,
+    affectedInstrumentIds: [OKX_BTC_USDT_SWAP],
+    reason: "test",
+    proposedAt: 1_000,
+  };
+  const report = summarizeRuntimeActions([
+    {
+      ...base,
+      id: 1,
+      createdAt: 1_000,
+    },
+    {
+      ...base,
+      id: 2,
+      surfaceRowId: 2,
+      createdAt: 1_500,
+      proposedAt: 1_500,
+    },
+    {
+      ...base,
+      id: 3,
+      surfaceRowId: 3,
+      actionType: "flatten_instrument",
+      createdAt: 1_600,
+      proposedAt: 1_600,
+    },
+  ], { cooldownMs: 1_000 });
+
+  assert.equal(report.summary.totalActions, 3);
+  assert.equal(report.summary.proposedCount, 3);
+  assert.equal(report.summary.cooldownDuplicateCount, 1);
+  assert.equal(report.cooldown.duplicates[0]?.id, 2);
+  assert.equal(report.cooldown.duplicates[0]?.previousId, 1);
 });

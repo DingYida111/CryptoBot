@@ -47,6 +47,7 @@ Portfolio algebra shadow diagnostics:
 - `npm run report:runtime-traces -- 50 --persist-messages` — 将分类后的 `warning / instrument_error / major_error` 消息写入 `runtime_messages`
 - `npm run report:runtime-traces -- 50 --persist-messages --persist-info` — 同时持久化正常 `info` 消息
 - `npm run report:runtime-traces -- 50 --persist-actions` — 将消息类别映射成 observe-only `runtime_actions` 建议动作
+- `npm run report:runtime-actions -- 50` — 汇总 observe-only action proposal，并标记 cooldown/dedupe 候选
 - `npm run report:runtime-traces -- 50 --notify-dry-run` — 打印将要通知的 error 类消息，不发送外部请求
 - `RUNTIME_NOTIFY_WEBHOOK_URL=https://... npm run report:runtime-traces -- 50 --notify` — 发送 `notify=true` 的消息到 webhook
 - `npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run` — 生成一条模拟 `instrument_error`，验证消息落库和 dry-run 通知链路，不触发任何交易动作
@@ -513,6 +514,8 @@ Funding arbitrage 示例：
   - 验证 trace -> message -> persistence -> notification dry-run 闭环
 - `npm run report:runtime-traces -- 20 --source runtime_trace_fixture --persist-actions`
   - 验证 trace -> message -> observe-only action proposal 落库
+- `npm run report:runtime-actions -- 20 --source runtime_trace_fixture`
+  - 汇总建议动作，审计 action type / instrument 分布和 cooldown 重复候选
 
 当前限制：
 

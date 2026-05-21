@@ -243,6 +243,10 @@ Action proposal mapping:
 
 All persisted action proposals currently use `status = proposed` and `execution_enabled = false`.
 
+`report:runtime-actions` summarizes proposed actions by action type, category, status, source, and affected instrument.
+It also flags cooldown duplicates using the key `source | action_type | message_code | instrument`.
+This cooldown layer is audit-only and does not suppress persistence or execution.
+
 ## 4. Current Architectural Layers
 
 ### 4.1 Data Collection Layer
@@ -496,6 +500,12 @@ npm run report:runtime-traces -- 50 --persist-messages --persist-info
 
 ```bash
 npm run report:runtime-traces -- 50 --persist-actions
+```
+
+- audit proposed actions and cooldown/dedupe candidates:
+
+```bash
+npm run report:runtime-actions -- 50
 ```
 
 - optionally dry-run notification:
