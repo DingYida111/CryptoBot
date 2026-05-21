@@ -1,4 +1,4 @@
-import { getDb, insertRuntimeMessage } from "../monitor/storage.js";
+import { getDb, insertRuntimeAction, insertRuntimeMessage } from "../monitor/storage.js";
 import {
   buildRuntimeTraceMessages,
   DEFAULT_RUNTIME_TRACE_ALERT_THRESHOLDS,
@@ -8,6 +8,7 @@ import {
   type RuntimeTraceMessage,
 } from "../portfolio/decision_trace_report.js";
 import type { RuntimeDecisionTrace } from "../portfolio/portfolio_types.js";
+import { buildRuntimeActionsForMessage, type RuntimeProposedAction } from "./runtime_actions.js";
 import { sendRuntimeNotifications, type RuntimeNotificationResult } from "./runtime_notifications.js";
 
 export interface RuntimeTraceObserverOptions {
@@ -18,6 +19,7 @@ export interface RuntimeTraceObserverOptions {
   readonly thresholds?: RuntimeDecisionTraceAlertThresholds;
   readonly persistMessages: boolean;
   readonly persistInfoMessages?: boolean;
+  readonly persistActions?: boolean;
   readonly notifyDryRun: boolean;
   readonly notify: boolean;
   readonly webhookUrl?: string | null;
@@ -42,6 +44,13 @@ export interface RuntimeTraceObserverResult {
     readonly webhookConfigured: boolean;
     readonly candidateCount: number;
     readonly results: readonly RuntimeNotificationResult[];
+  };
+  readonly actionPersistence: {
+    readonly enabled: boolean;
+    readonly executionEnabled: boolean;
+    readonly insertedCount: number;
+    readonly candidateCount: number;
+    readonly suppressedInfoCount: number;
   };
   readonly surfaces: {
     readonly portfolioShadowLogRows: number;
@@ -69,6 +78,12 @@ interface RawTraceRow {
 
 interface RuntimeTraceMessageWithSurface {
   readonly message: RuntimeTraceMessage;
+  readonly surface: string;
+  readonly rowId: number;
+}
+
+interface RuntimeActionWithSurface {
+  readonly action: RuntimeProposedAction;
   readonly surface: string;
   readonly rowId: number;
 }
@@ -149,6 +164,26 @@ function persistMessage(row: RuntimeTraceMessageWithSurface, emittedAt: number):
   });
 }
 
+function persistAction(row: RuntimeActionWithSurface, proposedAt: number): boolean {
+  return insertRuntimeAction({
+    surface: row.surface,
+    surfaceRowId: row.rowId,
+    messageCode: row.action.messageCode,
+    category: row.action.category,
+    scope: row.action.scope,
+    source: row.action.source,
+    traceVersion: row.action.traceVersion,
+    actionType: row.action.actionType,
+    status: row.action.status,
+    executionEnabled: row.action.executionEnabled,
+    affectedInstrumentIdsJson: JSON.stringify(row.action.affectedInstrumentIds),
+    reason: row.action.reason,
+    rawJson: JSON.stringify(row.action),
+    createdAt: row.action.createdAt ?? proposedAt,
+    proposedAt,
+  });
+}
+
 export function shouldPersistRuntimeTraceMessage(
   message: RuntimeTraceMessage,
   persistInfoMessages = false,
@@ -200,10 +235,23 @@ export async function observeRuntimeTraces(
   const persistableMessages = messagesWithSurface.filter((row) =>
     shouldPersistRuntimeTraceMessage(row.message, options.persistInfoMessages ?? false)
   );
+  const actionMessages = messagesWithSurface.filter((row) =>
+    shouldPersistRuntimeTraceMessage(row.message, options.persistInfoMessages ?? false)
+  );
+  const actionRows = actionMessages.flatMap((row) =>
+    buildRuntimeActionsForMessage(row.message, { executionEnabled: false }).map((action) => ({
+      action,
+      surface: row.surface,
+      rowId: row.rowId,
+    }))
+  );
 
   const emittedAt = Date.now();
   const insertedMessages = options.persistMessages
     ? persistableMessages.filter((row) => persistMessage(row, emittedAt))
+    : [];
+  const insertedActions = options.persistActions
+    ? actionRows.filter((row) => persistAction(row, emittedAt))
     : [];
   const notificationMessages = (options.persistMessages ? insertedMessages : messagesWithSurface)
     .map((row) => row.message)
@@ -235,6 +283,13 @@ export async function observeRuntimeTraces(
       webhookConfigured: Boolean(options.webhookUrl?.trim()),
       candidateCount: notificationMessages.length,
       results: notificationResults,
+    },
+    actionPersistence: {
+      enabled: options.persistActions ?? false,
+      executionEnabled: false,
+      insertedCount: insertedActions.length,
+      candidateCount: actionRows.length,
+      suppressedInfoCount: messagesWithSurface.length - actionMessages.length,
     },
     surfaces: {
       portfolioShadowLogRows: shadowRows.length,

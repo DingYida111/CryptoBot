@@ -224,13 +224,24 @@ Current behavior:
 - `warning`, `instrument_error`, and `major_error` messages can be persisted to `runtime_messages`
 - `info` persistence is opt-in to avoid turning normal trace health into database noise
 - `notify=true` messages can be sent to console or webhook
+- messages can be converted into observe-only action proposals in `runtime_actions`
 - no category currently pauses trading or flattens positions automatically
 
 Code:
 
 - `src/portfolio/decision_trace_report.ts`
+- `src/runtime/runtime_actions.ts`
 - `src/runtime/runtime_trace_observer.ts`
 - `src/runtime/runtime_notifications.ts`
+
+Action proposal mapping:
+
+- `major_error` -> `global_halt`, `flatten_all`
+- `instrument_error` -> `pause_instrument`, `flatten_instrument`
+- `warning` -> `record_warning`
+- `info` -> `record_info` only when normal info persistence is explicitly enabled
+
+All persisted action proposals currently use `status = proposed` and `execution_enabled = false`.
 
 ## 4. Current Architectural Layers
 
@@ -408,6 +419,7 @@ Use:
 - `portfolio_shadow_log`
 - `portfolio_residuals`
 - `runtime_messages`
+- `runtime_actions`
 
 Use:
 
@@ -415,6 +427,7 @@ Use:
 - actual vs shadow comparison
 - residual accounting
 - classified runtime messages and notify decisions
+- observe-only action proposals derived from message severity
 
 ### 6.3 Funding Arbitrage Tables
 
@@ -477,6 +490,12 @@ npm run report:runtime-traces -- 50 --persist-messages
 
 ```bash
 npm run report:runtime-traces -- 50 --persist-messages --persist-info
+```
+
+- optionally persist observe-only action proposals:
+
+```bash
+npm run report:runtime-traces -- 50 --persist-actions
 ```
 
 - optionally dry-run notification:

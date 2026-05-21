@@ -9,6 +9,7 @@ import { OKX_BTC_USDT_SWAP } from "../instrument_spec.js";
 import { buildOptimizationRequest } from "../optimizer_request.js";
 import { buildPortfolioState } from "../portfolio_state.js";
 import { shouldPersistRuntimeTraceMessage } from "../../runtime/runtime_trace_observer.js";
+import { buildRuntimeActionsForMessage } from "../../runtime/runtime_actions.js";
 
 function basePortfolio() {
   const portfolioState = buildPortfolioState({
@@ -212,4 +213,53 @@ test("runtime observer suppresses info persistence unless explicitly enabled", (
   assert.equal(message?.category, "info");
   assert.equal(message ? shouldPersistRuntimeTraceMessage(message) : null, false);
   assert.equal(message ? shouldPersistRuntimeTraceMessage(message, true) : null, true);
+});
+
+test("runtime actions map errors to observe-only proposed interventions", () => {
+  const { portfolioState, optimizationRequest } = basePortfolio();
+  const actualIntent = buildDecisionIntent("trade", "open_long", 3, "actual_open");
+  const shadowIntent = buildDecisionIntent("trade", "close_long", 2, "shadow_close");
+  const trace = buildRuntimeDecisionTrace({
+    traceVersion: "test-v1",
+    source: "strategy_runner",
+    portfolioState,
+    optimizationRequest,
+    actualDecision: buildTraceDecisionFromIntent({
+      reason: actualIntent.reason,
+      intent: actualIntent,
+      tradeLedger: buildTradeLedgerEntry(
+        OKX_BTC_USDT_SWAP,
+        actualIntent.route,
+        actualIntent.proposedDqContracts,
+        actualIntent.basis,
+      ),
+    }),
+    shadowDecision: buildTraceDecisionFromIntent({
+      reason: shadowIntent.reason,
+      intent: shadowIntent,
+      tradeLedger: buildTradeLedgerEntry(
+        OKX_BTC_USDT_SWAP,
+        shadowIntent.route,
+        shadowIntent.proposedDqContracts,
+        shadowIntent.basis,
+      ),
+    }),
+  });
+
+  const report = summarizeRuntimeDecisionTraces([{ trace, createdAt: 50 }]);
+  const instrumentError = report.messages.find((message) => message.category === "instrument_error");
+  const warning = report.messages.find((message) => message.category === "warning");
+
+  assert.deepEqual(
+    instrumentError ? buildRuntimeActionsForMessage(instrumentError).map((row) => row.actionType) : [],
+    ["pause_instrument", "flatten_instrument"],
+  );
+  assert.deepEqual(
+    warning ? buildRuntimeActionsForMessage(warning).map((row) => row.actionType) : [],
+    ["record_warning"],
+  );
+  assert.equal(
+    instrumentError ? buildRuntimeActionsForMessage(instrumentError)[0]?.executionEnabled : null,
+    false,
+  );
 });

@@ -259,6 +259,33 @@ function initSchema(db: Database.Database): void {
       ON runtime_messages(category, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runtime_messages_notify_created_at
       ON runtime_messages(notify, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS runtime_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      surface TEXT NOT NULL,
+      surface_row_id INTEGER NOT NULL,
+      message_code TEXT NOT NULL,
+      category TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      source TEXT NOT NULL,
+      trace_version TEXT,
+      action_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      execution_enabled INTEGER NOT NULL,
+      affected_instrument_ids_json TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      raw_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      proposed_at INTEGER NOT NULL,
+      UNIQUE(surface, surface_row_id, message_code, action_type)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_actions_created_at
+      ON runtime_actions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_runtime_actions_status_created_at
+      ON runtime_actions(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_runtime_actions_action_type_created_at
+      ON runtime_actions(action_type, created_at DESC);
   `);
 
   const columns = new Set(
@@ -472,6 +499,24 @@ export interface RuntimeMessageRecord {
   rawJson: string;
   createdAt: number;
   emittedAt: number;
+}
+
+export interface RuntimeActionRecord {
+  surface: string;
+  surfaceRowId: number;
+  messageCode: string;
+  category: string;
+  scope: string;
+  source: string;
+  traceVersion?: string | null;
+  actionType: string;
+  status: string;
+  executionEnabled: boolean;
+  affectedInstrumentIdsJson: string;
+  reason: string;
+  rawJson: string;
+  createdAt: number;
+  proposedAt: number;
 }
 
 export function insertTick(tick: Tick): void {
@@ -869,6 +914,34 @@ export function insertRuntimeMessage(record: RuntimeMessageRecord): boolean {
     record.rawJson,
     record.createdAt,
     record.emittedAt,
+  );
+  return result.changes > 0;
+}
+
+export function insertRuntimeAction(record: RuntimeActionRecord): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO runtime_actions (
+      surface, surface_row_id, message_code, category, scope, source, trace_version,
+      action_type, status, execution_enabled, affected_instrument_ids_json, reason,
+      raw_json, created_at, proposed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.surface,
+    record.surfaceRowId,
+    record.messageCode,
+    record.category,
+    record.scope,
+    record.source,
+    record.traceVersion ?? null,
+    record.actionType,
+    record.status,
+    record.executionEnabled ? 1 : 0,
+    record.affectedInstrumentIdsJson,
+    record.reason,
+    record.rawJson,
+    record.createdAt,
+    record.proposedAt,
   );
   return result.changes > 0;
 }

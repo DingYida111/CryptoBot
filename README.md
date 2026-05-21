@@ -23,6 +23,7 @@
 - 持久化 `funding_arb_events`
 - 持久化 `portfolio_snapshots` for `local_funding_arbitrage`
 - 持久化 `runtime_messages` for `warning / instrument_error / major_error`，`info` 需显式开启
+- 持久化 observe-only `runtime_actions` proposals，先审计不执行
 - RuntimeDecisionTrace 统一 report / health verdict / observe-only notification
 
 基础设计文档：
@@ -45,6 +46,7 @@ Portfolio algebra shadow diagnostics:
 - `npm run report:runtime-traces -- 50` — 统一读取 `portfolio_shadow_log` 与 `portfolio_snapshots` 中的 RuntimeDecisionTrace
 - `npm run report:runtime-traces -- 50 --persist-messages` — 将分类后的 `warning / instrument_error / major_error` 消息写入 `runtime_messages`
 - `npm run report:runtime-traces -- 50 --persist-messages --persist-info` — 同时持久化正常 `info` 消息
+- `npm run report:runtime-traces -- 50 --persist-actions` — 将消息类别映射成 observe-only `runtime_actions` 建议动作
 - `npm run report:runtime-traces -- 50 --notify-dry-run` — 打印将要通知的 error 类消息，不发送外部请求
 - `RUNTIME_NOTIFY_WEBHOOK_URL=https://... npm run report:runtime-traces -- 50 --notify` — 发送 `notify=true` 的消息到 webhook
 - `npm run run:runtime-message-self-test -- --persist-messages --notify-dry-run` — 生成一条模拟 `instrument_error`，验证消息落库和 dry-run 通知链路，不触发任何交易动作
@@ -55,6 +57,7 @@ Supervisor observe-only runtime trace monitoring:
 - `RUNTIME_TRACE_OBSERVER_ENABLED=true` — supervisor 每轮 sync 后自动扫描 RuntimeDecisionTrace
 - `RUNTIME_TRACE_OBSERVER_PERSIST_MESSAGES=true` — 写入 `runtime_messages`，默认 true
 - `RUNTIME_TRACE_OBSERVER_PERSIST_INFO=true` — 同时写入正常 `info` 消息，默认 false
+- `RUNTIME_TRACE_OBSERVER_PERSIST_ACTIONS=true` — 写入建议动作到 `runtime_actions`，默认 false
 - `RUNTIME_TRACE_OBSERVER_NOTIFY_DRY_RUN=true` — 只打印将通知的消息，默认 true
 - `RUNTIME_TRACE_OBSERVER_NOTIFY=true` — 真实发送 `notify=true` 的消息；不会暂停、不平仓、不改变交易路径
 
@@ -234,6 +237,7 @@ CryptoBot/
   - `info`：正常成交、参数变更、资金变动等信息
 - 当前 observer 是 observe-only：
   - 可以写入 `runtime_messages`
+  - 可以写入 `runtime_actions` 建议动作，`execution_enabled=false`
   - 默认只持久化 `warning / instrument_error / major_error`，`info` 需显式开启
   - 可以 dry-run 或 webhook 通知 `notify=true` 的消息
   - 不暂停、不平仓、不改变交易执行路径
@@ -491,6 +495,7 @@ Funding arbitrage 示例：
 - `funding_arb_events`
 - `portfolio_snapshots`（`source = local_funding_arbitrage`）
 - `runtime_messages`
+- `runtime_actions`
 
 这些表的目标是让分析建立在结构化数据上，而不是建立在日志文本上。
 
@@ -506,6 +511,8 @@ Funding arbitrage 示例：
   - 不访问交易接口
 - `npm run report:runtime-traces -- 20 --source runtime_trace_fixture --persist-messages --notify-dry-run`
   - 验证 trace -> message -> persistence -> notification dry-run 闭环
+- `npm run report:runtime-traces -- 20 --source runtime_trace_fixture --persist-actions`
+  - 验证 trace -> message -> observe-only action proposal 落库
 
 当前限制：
 

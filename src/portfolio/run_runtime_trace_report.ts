@@ -12,6 +12,7 @@ interface CliOptions {
   readonly thresholds: RuntimeDecisionTraceAlertThresholds;
   readonly persistMessages: boolean;
   readonly persistInfoMessages: boolean;
+  readonly persistActions: boolean;
   readonly notifyDryRun: boolean;
   readonly notify: boolean;
   readonly webhookUrl: string | null;
@@ -30,6 +31,7 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
   let allVersions = false;
   let persistMessages = false;
   let persistInfoMessages = false;
+  let persistActions = false;
   let notifyDryRun = false;
   let notify = false;
   let webhookUrl = process.env.RUNTIME_NOTIFY_WEBHOOK_URL ?? null;
@@ -94,6 +96,10 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
       persistInfoMessages = true;
       continue;
     }
+    if (arg === "--persist-actions") {
+      persistActions = true;
+      continue;
+    }
     if (arg === "--notify-dry-run") {
       notifyDryRun = true;
       continue;
@@ -124,6 +130,7 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
     thresholds,
     persistMessages,
     persistInfoMessages,
+    persistActions,
     notifyDryRun,
     notify,
     webhookUrl,
@@ -142,6 +149,7 @@ async function main(): Promise<void> {
     allVersions: result.allVersions,
     thresholds: result.thresholds,
     messagePersistence: result.messagePersistence,
+    actionPersistence: result.actionPersistence,
     notification: result.notification,
     surfaces: result.surfaces,
     traceHealth: traceReport.health,
