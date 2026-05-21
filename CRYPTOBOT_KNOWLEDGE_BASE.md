@@ -264,6 +264,7 @@ Each plan row includes live preflight readiness:
 - `blockers`
 - `adapterName`
 - `adapterOperation`
+- `controlEffects`
 
 Current blocker codes include:
 
@@ -288,6 +289,15 @@ This remains observe-only. It does not pause, flatten, or call exchange APIs.
 The executor currently uses `noop_runtime_action_adapter` as its default adapter boundary.
 It describes operations such as `pause_instrument` and `flatten_instrument`, but it does not call OKX or mutate live strategy state.
 Future live adapters should implement the same operation boundary before execution is enabled.
+
+Ready executable actions also produce observe-only control effects:
+
+- `global_halt`
+- `flatten_all_request`
+- `instrument_pause`
+- `flatten_instrument_request`
+
+These effects are currently plan-only. They do not write a control-state table or block strategy sync.
 
 ## 4. Current Architectural Layers
 

@@ -101,6 +101,8 @@ async function runOnce(): Promise<void> {
       readyForLiveExecutionCount: executorResult.plan.readyForLiveExecutionCount,
       blockedCount: executorResult.plan.blockedCount,
       adapterOperationCount: executorResult.plan.adapterOperationCount,
+      controlEffectCount: executorResult.plan.controlEffectCount,
+      controlEffectSummary: executorResult.plan.controlEffectSummary,
       blockerSummary: executorResult.plan.blockerSummary,
     });
   }

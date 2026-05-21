@@ -525,7 +525,7 @@ Funding arbitrage 示例：
 - `npm run report:runtime-actions -- 20 --source runtime_trace_fixture`
   - 汇总建议动作，审计 action type / instrument 分布和 cooldown 重复候选
 - `npm run run:runtime-action-executor -- 20 --source runtime_trace_fixture`
-  - dry-run 展示未来执行器会处理哪些动作和 adapter operation，不暂停、不平仓
+  - dry-run 展示未来执行器会处理哪些动作、adapter operation 和 control effects，不暂停、不平仓
 - `npm run run:runtime-action-executor -- 20 --simulate-live-execution-enabled --simulate-trading-adapter-configured`
   - 仅模拟 live preflight readiness，仍不触发交易
 - `npm run run:runtime-action-executor -- 20 --source runtime_trace_fixture --ack-dry-run`

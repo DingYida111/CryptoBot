@@ -372,6 +372,7 @@ test("runtime action executor builds dry-run plan without enabling execution", (
   ]);
   assert.equal(plan.rows[0]?.adapterName, "noop_runtime_action_adapter");
   assert.equal(plan.rows[0]?.adapterOperation?.target, "instrument");
+  assert.deepEqual(plan.rows[0]?.controlEffects, []);
   assert.equal(plan.rows[0]?.nextStatus, "dry_run_acknowledged");
   assert.equal(plan.rows[1]?.nextStatus, "dry_run_cooldown_duplicate");
 });
@@ -411,7 +412,18 @@ test("runtime action executor preflight can model live readiness without executi
   assert.equal(plan.readyForLiveExecutionCount, 1);
   assert.equal(plan.blockedCount, 0);
   assert.equal(plan.adapterOperationCount, 1);
+  assert.equal(plan.controlEffectCount, 1);
   assert.deepEqual(plan.rows[0]?.blockerCodes, []);
+  assert.deepEqual(plan.controlEffectSummary, [
+    { effectType: "flatten_instrument_request", count: 1 },
+  ]);
+  assert.deepEqual(plan.rows[0]?.controlEffects, [{
+    effectType: "flatten_instrument_request",
+    scope: "instrument",
+    targetId: OKX_BTC_USDT_SWAP,
+    value: "requested",
+    reason: "test",
+  }]);
   assert.deepEqual(plan.rows[0]?.adapterOperation, {
     adapterName: "noop_runtime_action_adapter",
     actionType: "flatten_instrument",

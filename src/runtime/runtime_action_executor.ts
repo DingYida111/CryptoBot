@@ -5,6 +5,11 @@ import {
   type RuntimeActionExecutionAdapter,
 } from "./runtime_action_adapter.js";
 import {
+  buildRuntimeControlEffectsForAction,
+  summarizeRuntimeControlEffects,
+  type RuntimeControlEffect,
+} from "./runtime_control.js";
+import {
   findRuntimeActionCooldownDuplicates,
   type RuntimeActionExecutorStatus,
   type RuntimeActionReportRow,
@@ -52,6 +57,7 @@ export interface RuntimeActionExecutionPlanRow {
   readonly blockers: readonly RuntimeActionExecutionBlocker[];
   readonly adapterName: string | null;
   readonly adapterOperation: RuntimeActionAdapterOperation | null;
+  readonly controlEffects: readonly RuntimeControlEffect[];
   readonly executorNote: string;
 }
 
@@ -68,6 +74,8 @@ export interface RuntimeActionExecutionPlan {
   readonly readyForLiveExecutionCount: number;
   readonly blockedCount: number;
   readonly adapterOperationCount: number;
+  readonly controlEffectCount: number;
+  readonly controlEffectSummary: ReturnType<typeof summarizeRuntimeControlEffects>;
   readonly blockerSummary: ReadonlyArray<{
     readonly code: RuntimeActionExecutionBlockerCode;
     readonly count: number;
@@ -300,6 +308,7 @@ function planRow(
       blockers,
       adapterName: adapter.name,
       adapterOperation: null,
+      controlEffects: [],
       executorNote: "Dry-run executor marked this proposed action as a cooldown duplicate.",
     };
   }
@@ -307,6 +316,9 @@ function planRow(
   if (EXECUTABLE_ACTION_TYPES.has(row.actionType)) {
     const blockers = executableBlockers(row, preflight);
     const adapterOperation = operationForRow(row, preflight);
+    const controlEffects = blockers.length === 0
+      ? buildRuntimeControlEffectsForAction(row)
+      : [];
     return {
       id: row.id,
       actionType: row.actionType,
@@ -323,6 +335,7 @@ function planRow(
       blockers,
       adapterName: adapter.name,
       adapterOperation,
+      controlEffects,
       executorNote: `Dry-run executor would run ${row.actionType} if live execution were enabled.`,
     };
   }
@@ -347,6 +360,7 @@ function planRow(
       blockers,
       adapterName: adapter.name,
       adapterOperation: operationForRow(row, preflight),
+      controlEffects: [],
       executorNote: `Dry-run executor acknowledges ${row.actionType}; no trading intervention is expected.`,
     };
   }
@@ -370,6 +384,7 @@ function planRow(
     blockers,
     adapterName: adapter.name,
     adapterOperation: null,
+    controlEffects: [],
     executorNote: `Dry-run executor does not know how to handle ${row.actionType}.`,
   };
 }
@@ -398,6 +413,8 @@ export function buildRuntimeActionExecutionPlan(input: {
     readyForLiveExecutionCount: rows.filter((row) => row.readyForLiveExecution).length,
     blockedCount: rows.filter((row) => !row.readyForLiveExecution).length,
     adapterOperationCount: rows.filter((row) => row.adapterOperation !== null).length,
+    controlEffectCount: rows.reduce((sum, row) => sum + row.controlEffects.length, 0),
+    controlEffectSummary: summarizeRuntimeControlEffects(rows),
     blockerSummary: countBlockers(rows),
     rows,
   };
