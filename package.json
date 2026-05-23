@@ -33,6 +33,7 @@
     "run:okx-batch-funding-validate": "node --import tsx src/trade/run_okx_batch_funding_pair_validation.ts",
     "run:okx-batch-funding-watch": "node --import tsx src/trade/run_okx_batch_funding_pair_watcher.ts",
     "run:okx-batch-funding-watch:dist": "node dist/trade/run_okx_batch_funding_pair_watcher.js",
+    "run:chop-grid-pnl-reconcile": "node dist/trade/run_chop_grid_pnl_reconcile.js",
     "deploy:release": "bash scripts/deploy_release.sh",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"

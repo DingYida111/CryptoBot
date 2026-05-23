@@ -59,6 +59,7 @@ Portfolio algebra shadow diagnostics:
 - `npm run run:runtime-maintenance-lease -- --agent-id cryptobot-supervisor --duration-ms 300000 --reason planned_deploy` — 创建维护租约，部署窗口内 watchdog 不升级为清仓类断连
 - `npm run run:runtime-watchdog -- --agent-id cryptobot-supervisor --persist-messages --persist-actions --notify-dry-run` — 评估 heartbeat；超过断连阈值写入 `major_error` 和 observe-only `global_halt / flatten_all` proposal
 - `npm run run:runtime-disconnect-dry-run` — 用独立 `cryptobot-disconnect-dry-run` agent 写入一条 121 秒前的 synthetic heartbeat，并验证 watchdog 会落 `major_error` 和 `flatten_all` proposal
+- `npm run run:chop-grid-pnl-reconcile` — dry-run 检查历史 chop grid roundtrip PnL 是否混入未乘 `ctVal` 的 legacy 记录；确认后加 `-- --apply` 修正 roundtrip 与 `chop_grid_state` 汇总
 
 Supervisor observe-only runtime trace monitoring:
 
