@@ -58,6 +58,7 @@ Portfolio algebra shadow diagnostics:
 - `npm run run:runtime-heartbeat -- --agent-id cryptobot-supervisor` — 写入一次 agent heartbeat
 - `npm run run:runtime-maintenance-lease -- --agent-id cryptobot-supervisor --duration-ms 300000 --reason planned_deploy` — 创建维护租约，部署窗口内 watchdog 不升级为清仓类断连
 - `npm run run:runtime-watchdog -- --agent-id cryptobot-supervisor --persist-messages --persist-actions --notify-dry-run` — 评估 heartbeat；超过断连阈值写入 `major_error` 和 observe-only `global_halt / flatten_all` proposal
+- `npm run run:runtime-disconnect-dry-run` — 用独立 `cryptobot-disconnect-dry-run` agent 写入一条 121 秒前的 synthetic heartbeat，并验证 watchdog 会落 `major_error` 和 `flatten_all` proposal
 
 Supervisor observe-only runtime trace monitoring:
 
@@ -421,7 +422,37 @@ npm run supervisor:strategies
 pm2 start ecosystem.config.js
 pm2 logs cryptobot-strat
 pm2 logs cryptobot-supervisor
+pm2 logs cryptobot-runtime-watchdog
 ```
+
+## 生产部署约定
+
+生产运行优先使用 `dist/` 编译产物，部署前先执行 `npm run build`。当前已切到 `node dist/...` 的生产入口包括 strategy runner、supervisor、funding watcher、runtime heartbeat、PM2 heartbeat proxy、maintenance lease、watchdog 和 synthetic disconnect dry-run。
+
+推荐服务器目录结构：
+
+```text
+/opt/cryptobot/
+├── current -> releases/<release-id>
+├── releases/
+└── shared/
+    ├── data/
+    ├── logs/
+    ├── secrets/
+    └── .env
+```
+
+发布脚本：
+
+```bash
+CRYPTOBOT_DEPLOY_ROOT=/opt/cryptobot \
+CRYPTOBOT_DEPLOY_PM2_RELOAD=true \
+CRYPTOBOT_DEPLOY_PM2_ONLY=cryptobot-agent-heartbeat-proxy,cryptobot-runtime-watchdog \
+CRYPTOBOT_DEPLOY_PM2_RECREATE=true \
+npm run deploy:release
+```
+
+`scripts/deploy_release.sh` 会创建 `releases/current/shared` 布局，构建 `dist/`，在切换 `current` 前创建 `planned_deploy` maintenance lease，并在退出时清理 lease。第一次把既有 TSX PM2 进程切到 dist 入口时使用 `CRYPTOBOT_DEPLOY_PM2_RECREATE=true`，因为 PM2 reload 不会可靠替换已有进程的 script path。核心生产进程完成 dist 迁移后，可以用 `CRYPTOBOT_DEPLOY_OMIT_DEV=true` 跳过 dev dependencies。
 
 ## Agent / 开发者阅读顺序
 

@@ -770,6 +770,7 @@ async function tryOpenPosition(
   const breakEvenPct = decision.breakEvenPct;
   const size = computeSuggestedOpenContracts(decision, signal, btcRef, balance);
   const sizeStr = String(Math.min(size, 100));
+  const openedContracts = Number(sizeStr);
 
   let result = null;
   if (decision.direction === "up") {
@@ -811,7 +812,7 @@ async function tryOpenPosition(
       slug: null,
       windowEndTimestamp: endTimestamp,
       orderId: result.ordId,
-      originalSize: size,
+      originalSize: openedContracts,
       lastStepIndex: -1,
       stopLossPct,
       breakEvenPct,
@@ -827,7 +828,7 @@ async function tryOpenPosition(
       reason: decision.reason,
       ordId: result.ordId,
       entryPrice: position.entryPrice,
-      size: size,
+      size: openedContracts,
       contracts: sizeStr,
       stopLossPct,
       breakEvenPct,
@@ -1184,6 +1185,7 @@ async function main(): Promise<void> {
             const gridResult = await maybeRunChopGrid("BTC-USDT-SWAP", CHOP_GRID_CONFIG, signal.regime, btcPrice, false, endTimestamp);
             log(`[GRID] ${gridResult.reason} | active=${gridResult.active}`);
             if (gridResult.openedSeed) {
+              const seedSize = Math.max(1, CHOP_GRID_CONFIG.orderSize * Math.max(1, CHOP_GRID_CONFIG.seedMultiplier));
               position = {
                 side: "long",
                 entryPrice: btcPrice,
@@ -1191,7 +1193,7 @@ async function main(): Promise<void> {
                 slug: null,
                 windowEndTimestamp: endTimestamp,
                 orderId: null,
-                originalSize: CHOP_GRID_CONFIG.orderSize,
+                originalSize: seedSize,
                 lastStepIndex: -1,
                 stopLossPct: 0,
                 breakEvenPct: 0,
@@ -1204,7 +1206,7 @@ async function main(): Promise<void> {
                 regime: signal.regime,
                 entryPrice: btcPrice,
                 windowEnd: endTimestamp,
-                inventory: CHOP_GRID_CONFIG.orderSize,
+                inventory: seedSize,
               });
             }
           }

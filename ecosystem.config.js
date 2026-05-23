@@ -79,8 +79,7 @@ module.exports = {
     },
     {
       name: "cryptobot-supervisor",
-      script: "node_modules/.bin/tsx",
-      args: "src/runtime/run_strategy_supervisor.ts",
+      script: "dist/runtime/run_strategy_supervisor.js",
       cwd: __dirname,
 
       watch: false,
@@ -165,9 +164,81 @@ module.exports = {
       listen_timeout: 10000,
     },
     {
+      name: "cryptobot-agent-heartbeat-proxy",
+      script: "dist/runtime/run_pm2_heartbeat_proxy.js",
+      cwd: __dirname,
+
+      watch: false,
+      autorestart: true,
+      restart_delay: 5000,
+      max_restarts: 20,
+      min_uptime: "10s",
+
+      env: {
+        NODE_ENV: "production",
+        RUNTIME_HEARTBEAT_PM2_NAME: "cryptobot-supervisor",
+        RUNTIME_AGENT_ID: "cryptobot-supervisor",
+        RUNTIME_AGENT_ROLE: "strategy_supervisor",
+        RUNTIME_HEARTBEAT_INTERVAL_MS: "10000",
+        RUNTIME_AGENT_MANAGED_INSTRUMENTS: "BTC funding package,BTC-USDT,BTC-USDT-SWAP",
+      },
+      env_development: {
+        NODE_ENV: "development",
+      },
+
+      out_file: "logs/heartbeat-proxy.out.log",
+      error_file: "logs/heartbeat-proxy.log",
+      merge_logs: true,
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+      max_size: "50M",
+      retain: 10,
+
+      max_memory_restart: "256M",
+      kill_timeout: 5000,
+      listen_timeout: 10000,
+    },
+    {
+      name: "cryptobot-runtime-watchdog",
+      script: "dist/runtime/run_runtime_watchdog.js",
+      args: "--watch",
+      cwd: __dirname,
+
+      watch: false,
+      autorestart: true,
+      restart_delay: 5000,
+      max_restarts: 20,
+      min_uptime: "10s",
+
+      env: {
+        NODE_ENV: "production",
+        RUNTIME_AGENT_ID: "cryptobot-supervisor",
+        RUNTIME_WATCHDOG_STALE_AFTER_MS: "60000",
+        RUNTIME_WATCHDOG_DISCONNECT_AFTER_MS: "120000",
+        RUNTIME_WATCHDOG_MAINTENANCE_GRACE_MS: "120000",
+        RUNTIME_WATCHDOG_INTERVAL_MS: "10000",
+        RUNTIME_WATCHDOG_PERSIST_MESSAGES: "true",
+        RUNTIME_WATCHDOG_PERSIST_ACTIONS: "true",
+        RUNTIME_WATCHDOG_NOTIFY_DRY_RUN: "true",
+        RUNTIME_WATCHDOG_AFFECTED_INSTRUMENTS: "BTC-USDT,BTC-USDT-SWAP",
+      },
+      env_development: {
+        NODE_ENV: "development",
+      },
+
+      out_file: "logs/runtime-watchdog.out.log",
+      error_file: "logs/runtime-watchdog.log",
+      merge_logs: true,
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+      max_size: "50M",
+      retain: 10,
+
+      max_memory_restart: "256M",
+      kill_timeout: 5000,
+      listen_timeout: 10000,
+    },
+    {
       name: "cryptobot-okx-funding-watch",
-      script: "node_modules/.bin/tsx",
-      args: "src/trade/run_okx_batch_funding_pair_watcher.ts",
+      script: "dist/trade/run_okx_batch_funding_pair_watcher.js",
       cwd: __dirname,
 
       watch: false,

@@ -787,6 +787,11 @@ async function syncGridPosition(
     !snapshot.active &&
     active.posSide !== "short" &&
     hasBidirectionalLongGridOrders(pending);
+
+  if (!snapshot.active && !adoptFromExchange) {
+    return;
+  }
+
   const prevActive = snapshot.active;
   const prevEntryPrice = snapshot.entryPrice;
   const prevInventory = snapshot.inventory;
@@ -1102,6 +1107,7 @@ export async function maybeRunChopGrid(
     await closeAllPositions(instId);
     await sleep(250);
     await auditRecentGridFills(instId, contractValue);
+    await cancelAllGridOrders(instId);
     const remainingInventory = await getOpenLongInventory(instId);
     if (remainingInventory <= 0 && openLots.length > 0) {
       settleRemainingOpenLots(price, Date.now(), contractValue, "force_exit");
@@ -1128,11 +1134,11 @@ export async function maybeRunChopGrid(
   }
 
   if (!snapshot.active) {
+    await cancelAllGridOrders(instId);
     const reentryGate = resolveReentryGate(snapshot, config, Date.now(), currentWindowEndTimestamp);
     if (reentryGate.blocked) {
       return { active: false, reason: reentryGate.reason, openedSeed: false };
     }
-    await cancelAllGridOrders(instId);
     const now = Date.now();
     const seedSize = Math.max(1, config.orderSize * Math.max(1, config.seedMultiplier));
     const seed = await buyUp(instId, String(seedSize));
@@ -1179,6 +1185,7 @@ export async function maybeRunChopGrid(
     await closeAllPositions(instId);
     await sleep(250);
     await auditRecentGridFills(instId, contractValue);
+    await cancelAllGridOrders(instId);
     const remainingInventory = await getOpenLongInventory(instId);
     if (remainingInventory <= 0 && openLots.length > 0) {
       settleRemainingOpenLots(price, Date.now(), contractValue, "breakout_stop");
