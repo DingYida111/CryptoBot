@@ -26,6 +26,14 @@ export const ResidualLedgerSummarySchema = z.object({
   byReasonCode: z.record(ResidualReasonCodeSchema, z.number()),
 });
 
+export const ResidualBudgetCheckSchema = z.object({
+  rowCount: z.number().int().nonnegative(),
+  grossQuantity: z.number(),
+  netQuantity: z.number(),
+  withinBudget: z.boolean(),
+  exceeded: z.array(z.string()),
+});
+
 export const BasisDecompositionSchema = z.object({
   basisId: StrategyBasisIdSchema.nullable(),
   strategyWeight: z.number(),
@@ -83,6 +91,20 @@ export const OptimizationRequestSchema = z.object({
   enabledStrategies: z.array(StrategyIdSchema),
   basisIds: z.array(StrategyBasisIdSchema),
   objectiveScores: z.record(z.string(), z.number()),
+  basisBidOfferScores: z.record(
+    StrategyBasisIdSchema,
+    z.object({
+      bid: z.number(),
+      offer: z.number(),
+    }),
+  ).optional(),
+  instrumentBidOfferCosts: z.record(
+    InstrumentIdSchema,
+    z.object({
+      bid: z.number(),
+      offer: z.number(),
+    }),
+  ).optional(),
   instrumentBounds: z.record(InstrumentIdSchema, z.tuple([z.number(), z.number()])),
   securityBounds: z.record(SecurityIdSchema, z.tuple([z.number(), z.number()])),
 });
@@ -104,6 +126,64 @@ export const DecisionIntentSchema = z.object({
   ]),
   proposedDqContracts: z.number(),
   basis: BasisDecompositionSchema,
+  reason: z.string().min(1),
+  metadata: z.record(z.union([z.string(), z.number(), z.boolean()])),
+});
+
+export const OptimizationObjectiveBreakdownSchema = z.object({
+  efficiency: z.number(),
+  risk: z.number(),
+  cost: z.number(),
+  constant: z.number(),
+});
+
+export const OptimizationBasisCandidateSchema = z.object({
+  basisId: StrategyBasisIdSchema,
+  score: z.number(),
+  normalizedScore: z.number(),
+  currentWeight: z.number(),
+  feasibleWeightLower: z.number(),
+  feasibleWeightUpper: z.number(),
+  targetWeight: z.number(),
+  objectiveValue: z.number(),
+  objectiveBreakdown: OptimizationObjectiveBreakdownSchema,
+});
+
+export const OptimizationResultSchema = z.object({
+  selectedBasisId: StrategyBasisIdSchema.nullable(),
+  selectedBasisWeight: z.number(),
+  targetInstrumentPositions: z.record(InstrumentIdSchema, z.number()),
+  targetInstrumentDeltas: z.record(InstrumentIdSchema, z.number()),
+  targetSecurityExposures: z.record(SecurityIdSchema, z.number()),
+  targetSecurityDeltas: z.record(SecurityIdSchema, z.number()),
+  objectiveValue: z.number(),
+  objectiveBreakdown: OptimizationObjectiveBreakdownSchema,
+  candidates: z.array(OptimizationBasisCandidateSchema),
+  reason: z.string().min(1),
+  metadata: z.record(z.union([z.string(), z.number(), z.boolean()])),
+});
+
+export const QuantizedInstrumentDeltaSchema = z.object({
+  instrumentId: InstrumentIdSchema,
+  requestedDelta: z.number(),
+  stepSize: z.number(),
+  minTradeSize: z.number(),
+  roundedDelta: z.number(),
+  residualDelta: z.number(),
+  roundingMode: z.enum(["toward_zero", "nearest", "floor", "ceil"]),
+  satisfiesMinTradeSize: z.boolean(),
+});
+
+export const ExecutionPlanSchema = z.object({
+  asOfMs: z.number().int().nonnegative(),
+  source: z.string().min(1),
+  targetInstrumentPositions: z.record(InstrumentIdSchema, z.number()),
+  targetInstrumentDeltas: z.record(InstrumentIdSchema, z.number()),
+  executedInstrumentDeltas: z.record(InstrumentIdSchema, z.number()),
+  quantizedDeltas: z.array(QuantizedInstrumentDeltaSchema),
+  residualLedger: z.array(ResidualPositionSchema),
+  residualBudgetCheck: ResidualBudgetCheckSchema.nullable(),
+  executable: z.boolean(),
   reason: z.string().min(1),
   metadata: z.record(z.union([z.string(), z.number(), z.boolean()])),
 });

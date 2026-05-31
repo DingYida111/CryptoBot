@@ -1,5 +1,7 @@
 import type {
+  DirectionId,
   InstrumentId,
+  MarketletId,
   ResidualReasonCode,
   SecurityId,
   StrategyBasisId,
@@ -69,6 +71,63 @@ export interface StrategyTemplateSpec {
   readonly tags: readonly string[];
 }
 
+export interface DirectionSpec {
+  readonly directionId: DirectionId;
+  readonly securityWeights: Readonly<Record<SecurityId, number>>;
+  readonly lowerBound: number;
+  readonly upperBound: number;
+  readonly description: string;
+  readonly active: boolean;
+  readonly bidThreshold?: number;
+  readonly offerThreshold?: number;
+  readonly horizonMs?: number;
+  readonly tags: readonly string[];
+}
+
+export interface BidOfferQuantity {
+  readonly bidQuantity: number;
+  readonly offerQuantity: number;
+}
+
+export interface BidOfferLinearValue {
+  readonly bid: number;
+  readonly offer: number;
+}
+
+export interface MarketletSpec {
+  readonly marketletId: MarketletId;
+  readonly instrumentWeights: Readonly<Record<InstrumentId, number>>;
+  readonly securityWeights: Readonly<Record<SecurityId, number>>;
+  readonly lowerBound: number;
+  readonly upperBound: number;
+  readonly description: string;
+  readonly active: boolean;
+  readonly tags: readonly string[];
+}
+
+export interface DirectionExecutionRouteSpec {
+  readonly directionId: DirectionId;
+  readonly marketletWeights: Readonly<Record<MarketletId, number>>;
+  readonly description: string;
+  readonly active: boolean;
+  readonly tags: readonly string[];
+}
+
+export interface SecurityExposureResidual {
+  readonly securityId: SecurityId;
+  readonly marketletQuantity: number;
+  readonly directionQuantity: number;
+  readonly residualQuantity: number;
+}
+
+export interface RoutedDirectionExecution {
+  readonly directionExposure: Readonly<Record<SecurityId, number>>;
+  readonly marketletWeights: Readonly<Record<MarketletId, number>>;
+  readonly marketletExposure: Readonly<Record<SecurityId, number>>;
+  readonly residual: readonly SecurityExposureResidual[];
+  readonly matches: boolean;
+}
+
 export interface ResidualPosition {
   readonly instrumentId: InstrumentId;
   readonly quantity: number;
@@ -81,6 +140,20 @@ export interface ResidualLedgerSummary {
   readonly netQuantity: number;
   readonly byInstrument: Readonly<Record<InstrumentId, number>>;
   readonly byReasonCode: Readonly<Record<ResidualReasonCode, number>>;
+}
+
+export interface ResidualBudget {
+  readonly maxRowCount?: number;
+  readonly maxGrossQuantity?: number;
+  readonly maxNetQuantity?: number;
+}
+
+export interface ResidualBudgetCheck {
+  readonly rowCount: number;
+  readonly grossQuantity: number;
+  readonly netQuantity: number;
+  readonly withinBudget: boolean;
+  readonly exceeded: readonly string[];
 }
 
 export interface BasisDecomposition {
@@ -171,6 +244,8 @@ export interface OptimizationRequest {
   readonly enabledStrategies: readonly StrategyId[];
   readonly basisIds: readonly StrategyBasisId[];
   readonly objectiveScores: Readonly<Record<string, number>>;
+  readonly basisBidOfferScores?: Readonly<Record<string, BidOfferLinearValue>>;
+  readonly instrumentBidOfferCosts?: Readonly<Record<InstrumentId, BidOfferLinearValue>>;
   readonly instrumentBounds: Readonly<Record<InstrumentId, readonly [number, number]>>;
   readonly securityBounds: Readonly<Record<SecurityId, readonly [number, number]>>;
 }
@@ -209,6 +284,66 @@ export interface DecisionIntent {
   readonly route: DecisionRoute;
   readonly proposedDqContracts: number;
   readonly basis: BasisDecomposition;
+  readonly reason: string;
+  readonly metadata: Readonly<Record<string, string | number | boolean>>;
+}
+
+export type ExecutionRoundingMode = "toward_zero" | "nearest" | "floor" | "ceil";
+
+export interface OptimizationObjectiveBreakdown {
+  readonly efficiency: number;
+  readonly risk: number;
+  readonly cost: number;
+  readonly constant: number;
+}
+
+export interface OptimizationBasisCandidate {
+  readonly basisId: StrategyBasisId;
+  readonly score: number;
+  readonly normalizedScore: number;
+  readonly currentWeight: number;
+  readonly feasibleWeightLower: number;
+  readonly feasibleWeightUpper: number;
+  readonly targetWeight: number;
+  readonly objectiveValue: number;
+  readonly objectiveBreakdown: OptimizationObjectiveBreakdown;
+}
+
+export interface OptimizationResult {
+  readonly selectedBasisId: StrategyBasisId | null;
+  readonly selectedBasisWeight: number;
+  readonly targetInstrumentPositions: Readonly<Record<InstrumentId, number>>;
+  readonly targetInstrumentDeltas: Readonly<Record<InstrumentId, number>>;
+  readonly targetSecurityExposures: Readonly<Record<SecurityId, number>>;
+  readonly targetSecurityDeltas: Readonly<Record<SecurityId, number>>;
+  readonly objectiveValue: number;
+  readonly objectiveBreakdown: OptimizationObjectiveBreakdown;
+  readonly candidates: readonly OptimizationBasisCandidate[];
+  readonly reason: string;
+  readonly metadata: Readonly<Record<string, string | number | boolean>>;
+}
+
+export interface QuantizedInstrumentDelta {
+  readonly instrumentId: InstrumentId;
+  readonly requestedDelta: number;
+  readonly stepSize: number;
+  readonly minTradeSize: number;
+  readonly roundedDelta: number;
+  readonly residualDelta: number;
+  readonly roundingMode: ExecutionRoundingMode;
+  readonly satisfiesMinTradeSize: boolean;
+}
+
+export interface ExecutionPlan {
+  readonly asOfMs: number;
+  readonly source: string;
+  readonly targetInstrumentPositions: Readonly<Record<InstrumentId, number>>;
+  readonly targetInstrumentDeltas: Readonly<Record<InstrumentId, number>>;
+  readonly executedInstrumentDeltas: Readonly<Record<InstrumentId, number>>;
+  readonly quantizedDeltas: readonly QuantizedInstrumentDelta[];
+  readonly residualLedger: readonly ResidualPosition[];
+  readonly residualBudgetCheck: ResidualBudgetCheck | null;
+  readonly executable: boolean;
   readonly reason: string;
   readonly metadata: Readonly<Record<string, string | number | boolean>>;
 }

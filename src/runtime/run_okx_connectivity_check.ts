@@ -19,6 +19,10 @@ function timeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 8_000;
 }
 
+function useLiveApi(): boolean {
+  return process.env.OKX_CONNECTIVITY_USE_LIVE === "true";
+}
+
 function nowMs(): number {
   return Date.now();
 }
@@ -104,29 +108,34 @@ function sign(timestamp: string, method: string, path: string, body: string, sec
 
 async function checkPrivateBalance(): Promise<CheckResult> {
   const started = nowMs();
-  const creds = getOkxCredentialSet(false);
+  const live = useLiveApi();
+  const creds = getOkxCredentialSet(live);
   if (!creds.apiKey || !creds.apiSecret || !creds.apiPassphrase) {
     return {
       name: "private:account_balance",
       ok: false,
       elapsedMs: nowMs() - started,
-      error: "OKX paper credentials are not configured.",
+      error: `OKX ${live ? "live" : "paper"} credentials are not configured.`,
     };
   }
 
   const path = "/api/v5/account/balance";
   const timestamp = new Date().toISOString();
   try {
+    const headers: Record<string, string> = {
+      "OK-ACCESS-KEY": creds.apiKey,
+      "OK-ACCESS-SIGN": sign(timestamp, "GET", path, "", creds.apiSecret),
+      "OK-ACCESS-TIMESTAMP": timestamp,
+      "OK-ACCESS-PASSPHRASE": creds.apiPassphrase,
+      "Content-Type": "application/json",
+    };
+    if (!live) {
+      headers["x-simulated-trading"] = "1";
+    }
+
     const response = await timedJsonFetch({
       path,
-      headers: {
-        "OK-ACCESS-KEY": creds.apiKey,
-        "OK-ACCESS-SIGN": sign(timestamp, "GET", path, "", creds.apiSecret),
-        "OK-ACCESS-TIMESTAMP": timestamp,
-        "OK-ACCESS-PASSPHRASE": creds.apiPassphrase,
-        "Content-Type": "application/json",
-        "x-simulated-trading": "1",
-      },
+      headers,
     });
     return {
       name: "private:account_balance",
@@ -156,7 +165,7 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({
     ok: results.every((row) => row.ok),
     timeoutMs: timeoutMs(),
-    useLiveApi: false,
+    useLiveApi: useLiveApi(),
     tradingAction: false,
     results,
   }, null, 2));

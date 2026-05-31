@@ -5,6 +5,8 @@ export type InstrumentId = Brand<string, "InstrumentId">;
 export type StrategyBasisId = Brand<string, "StrategyBasisId">;
 export type StrategyId = Brand<string, "StrategyId">;
 export type ResidualReasonCode = Brand<string, "ResidualReasonCode">;
+export type DirectionId = Brand<string, "DirectionId">;
+export type MarketletId = Brand<string, "MarketletId">;
 
 export function asSecurityId(value: string): SecurityId {
   return value as SecurityId;
@@ -24,4 +26,12 @@ export function asStrategyId(value: string): StrategyId {
 
 export function asResidualReasonCode(value: string): ResidualReasonCode {
   return value as ResidualReasonCode;
+}
+
+export function asDirectionId(value: string): DirectionId {
+  return value as DirectionId;
+}
+
+export function asMarketletId(value: string): MarketletId {
+  return value as MarketletId;
 }
