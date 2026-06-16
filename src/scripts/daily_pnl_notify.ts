@@ -1,8 +1,9 @@
 /**
- * Daily PnL report pushed to Gary WeChat bot.
+ * Daily PnL report pushed to Gary WeChat bot via iLink API.
  * Run via PM2 cron or manually: npx tsx src/scripts/daily_pnl_notify.ts
  *
- * Required env: GARY_NOTIFY_WEBHOOK_URL (optional, falls back to stdout)
+ * Required env: GARY_ILINK_TOKEN, GARY_ILINK_TO_USER (optional, falls back to stdout)
+ * Optional env: GARY_ILINK_CONTEXT_TOKEN (for session continuity)
  */
 import { getDb } from "../monitor/storage.js";
 import { config as dotenvConfig } from "dotenv";
@@ -16,18 +17,40 @@ function todayRangeMs(): { startMs: number; endMs: number } {
 }
 
 async function sendNotification(text: string): Promise<void> {
-  const url = process.env.GARY_NOTIFY_WEBHOOK_URL;
-  if (!url) {
-    console.log("[DailyReport] No GARY_NOTIFY_WEBHOOK_URL set, printing to stdout:\n" + text);
+  const token = process.env.GARY_ILINK_TOKEN;
+  const toUser = process.env.GARY_ILINK_TO_USER;
+  if (!token || !toUser) {
+    console.log("[DailyReport] Gary iLink not configured, printing to stdout:\n" + text);
     return;
   }
-  const resp = await fetch(url, {
+  const contextToken = process.env.GARY_ILINK_CONTEXT_TOKEN;
+  const msg: Record<string, unknown> = {
+    from_user_id: "",
+    to_user_id: toUser,
+    client_id: Math.random().toString(36).slice(2),
+    message_type: 2,
+    message_state: 2,
+    item_list: [{ type: 1, text_item: { text } }],
+  };
+  if (contextToken) msg["context_token"] = contextToken;
+  const body = JSON.stringify({ msg, base_info: { channel_version: "2.2.0" } });
+  const uin = Buffer.from(String(Math.floor(Math.random() * 2 ** 32))).toString("base64");
+  const resp = await fetch("https://ilinkai.weixin.qq.com/ilink/bot/sendmessage", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    headers: {
+      "Content-Type": "application/json",
+      "AuthorizationType": "ilink_bot_token",
+      "Authorization": `Bearer ${token}`,
+      "X-WECHAT-UIN": uin,
+      "iLink-App-Id": "bot",
+      "iLink-App-ClientVersion": "131584",
+    },
+    body,
   });
-  if (!resp.ok) {
-    throw new Error(`Webhook POST failed: ${resp.status} ${await resp.text()}`);
+  if (!resp.ok) throw new Error(`iLink POST failed: ${resp.status} ${await resp.text()}`);
+  const result = await resp.json() as { errcode?: number; errmsg?: string };
+  if (result.errcode && result.errcode !== 0) {
+    throw new Error(`iLink error: ${result.errcode} ${result.errmsg}`);
   }
 }
 
