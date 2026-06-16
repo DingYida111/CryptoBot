@@ -13,7 +13,9 @@ export type RuntimeActionStatus = "proposed";
 export type RuntimeActionExecutorStatus =
   | "proposed"
   | "dry_run_acknowledged"
-  | "dry_run_cooldown_duplicate";
+  | "dry_run_cooldown_duplicate"
+  | "live_executed"
+  | "live_skipped";
 
 export interface RuntimeProposedAction {
   readonly actionType: RuntimeActionType;

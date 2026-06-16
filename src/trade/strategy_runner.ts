@@ -79,6 +79,7 @@ const CONTRARIAN_BREAK_EVEN_PCT = parseFloat(process.env.CONTRARIAN_BREAK_EVEN_P
 const EXTREME_VOL_THRESHOLD = parseFloat(process.env.EXTREME_VOL_THRESHOLD ?? "0.003");
 const MAX_POS_SIZE_PCT = parseFloat(process.env.MAX_POS_SIZE_PCT ?? "0.20");
 const ENTRY_TIME_RATIO_MIN = parseFloat(process.env.ENTRY_TIME_RATIO_MIN ?? "0.2");
+const DAILY_LOSS_LIMIT_USD = parseFloat(process.env.DAILY_LOSS_LIMIT_USD ?? "25");
 
 const STEP_DOWN_LEVELS: { profitPct: number; closeFraction: number }[] = [
   { profitPct: 0.3, closeFraction: 0.25 },
@@ -136,12 +137,31 @@ let lastBalanceTs = 0;
 let lastOkxPositions: OkxPosition[] = [];
 const BALANCE_CACHE_MS = 30_000;
 
+// Daily loss circuit breaker
+let dailyRealizedPnlUsd = 0;
+let currentDay = new Date().toDateString();
+
 function log(msg: string): void {
   console.error(`[${new Date().toISOString()}] ${msg}`);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function checkDayReset(): void {
+  const today = new Date().toDateString();
+  if (today !== currentDay) {
+    log(`[BREAKER] New day — reset daily PnL tracker (was ${dailyRealizedPnlUsd.toFixed(2)} USD)`);
+    dailyRealizedPnlUsd = 0;
+    currentDay = today;
+  }
+}
+
+function recordClosePnl(entryPrice: number, exitPrice: number, side: "long" | "short", contracts: number): void {
+  const pnl = (side === "long" ? exitPrice - entryPrice : entryPrice - exitPrice) * CONTRACT_SIZE * contracts;
+  dailyRealizedPnlUsd += pnl;
+  log(`[BREAKER] Trade PnL: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD | Daily: ${dailyRealizedPnlUsd.toFixed(2)} USD`);
 }
 
 function resetPosition(): void {
@@ -754,6 +774,13 @@ async function tryOpenPosition(
   signal: StrategySignal,
   endTimestamp: number
 ): Promise<boolean> {
+  checkDayReset();
+  if (DAILY_LOSS_LIMIT_USD > 0 && dailyRealizedPnlUsd <= -DAILY_LOSS_LIMIT_USD) {
+    log(`[BREAKER] Daily loss limit hit (${dailyRealizedPnlUsd.toFixed(2)} USD ≤ -${DAILY_LOSS_LIMIT_USD}) — skipping entry`);
+    logTradeEvent("RISK", "daily_loss_halted", { dailyPnlUsd: dailyRealizedPnlUsd, limitUsd: DAILY_LOSS_LIMIT_USD });
+    return false;
+  }
+
   if (!ENABLE_TRADING) {
     log(`[SIM] Would open: ${decision.direction} source=${decision.source} reason=${decision.reason}`);
     return false;
@@ -951,7 +978,9 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
       remainingMins,
       isGrid: position.isGrid,
     });
+    const _sz = currentAbsContracts();
     await closeAllPositions("BTC-USDT-SWAP");
+    if (position.entryPrice !== null && position.side !== null) recordClosePnl(position.entryPrice, btcRef, position.side, _sz);
     resetPosition();
     return;
   }
@@ -967,7 +996,9 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
       remainingMins,
       isGrid: position.isGrid,
     });
+    const _sz = currentAbsContracts();
     await closeAllPositions("BTC-USDT-SWAP");
+    if (position.entryPrice !== null && position.side !== null) recordClosePnl(position.entryPrice, btcRef, position.side, _sz);
     resetPosition();
     return;
   }
@@ -983,7 +1014,9 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
       holdMinutes: elapsedMs / 60000,
       isGrid: position.isGrid,
     });
+    const _sz2 = currentAbsContracts();
     await closeAllPositions("BTC-USDT-SWAP");
+    if (position.entryPrice !== null && position.side !== null) recordClosePnl(position.entryPrice, btcRef, position.side, _sz2);
     resetPosition();
     return;
   }
@@ -1003,7 +1036,9 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
       source: position.isContrarian ? "contrarian" : "main",
       isGrid: position.isGrid,
     });
+    const _sz3 = currentAbsContracts();
     await closeAllPositions("BTC-USDT-SWAP");
+    if (position.entryPrice !== null && position.side !== null) recordClosePnl(position.entryPrice, btcRef, position.side, _sz3);
     resetPosition();
     return;
   }
@@ -1038,7 +1073,9 @@ async function tryClosePosition(signal: StrategySignal): Promise<void> {
         source: "contrarian",
         isGrid: position.isGrid,
       });
+      const _sz4 = currentAbsContracts();
       await closeAllPositions("BTC-USDT-SWAP");
+      if (position.entryPrice !== null && position.side !== null) recordClosePnl(position.entryPrice, btcRef, position.side, _sz4);
       resetPosition();
       return;
     }

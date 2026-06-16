@@ -1,4 +1,11 @@
-import { executeRuntimeActionDryRun } from "./runtime_action_executor.js";
+import { config as dotenvConfig } from "dotenv";
+import { executeRuntimeActionDryRun, queryRuntimeActionRows } from "./runtime_action_executor.js";
+import { updateRuntimeActionStatus } from "../monitor/storage.js";
+import { executeOkxRuntimeAction, createOkxRuntimeActionAdapter } from "./okx_runtime_action_adapter.js";
+import { buildRuntimeActionExecutionPlan } from "./runtime_action_executor.js";
+import { findRuntimeActionCooldownDuplicates } from "./runtime_actions.js";
+
+dotenvConfig();
 
 interface CliOptions {
   readonly limit: number;
@@ -11,6 +18,7 @@ interface CliOptions {
   readonly liveExecutionEnabled: boolean;
   readonly tradingAdapterConfigured: boolean;
   readonly persistControlEffects: boolean;
+  readonly live: boolean;
 }
 
 function parsePositiveNumber(value: string | undefined): number | null {
@@ -90,6 +98,11 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
       persistControlEffects = true;
       continue;
     }
+    if (arg === "--live") {
+      liveExecutionEnabled = true;
+      tradingAdapterConfigured = true;
+      continue;
+    }
     const parsed = parsePositiveNumber(arg);
     if (parsed !== null) {
       limit = Math.floor(parsed);
@@ -107,8 +120,43 @@ function parseCliOptions(argv: readonly string[]): CliOptions {
     liveExecutionEnabled,
     tradingAdapterConfigured,
     persistControlEffects,
+    live: liveExecutionEnabled && tradingAdapterConfigured,
   };
 }
 
+async function runLiveExecution(options: CliOptions): Promise<void> {
+  const adapter = createOkxRuntimeActionAdapter();
+  const rows = queryRuntimeActionRows({ ...options, status: "proposed" });
+  const duplicates = findRuntimeActionCooldownDuplicates(rows, options.cooldownMs);
+  const duplicateIds = new Set(duplicates.map((r) => r.id));
+  const plan = buildRuntimeActionExecutionPlan({
+    rows,
+    cooldownMs: options.cooldownMs,
+    ackDryRun: false,
+    preflight: { liveExecutionEnabled: true, tradingAdapterConfigured: true, adapter },
+  });
+
+  const ready = plan.rows.filter((r) => r.readyForLiveExecution && !duplicateIds.has(r.id));
+  const results: Array<{ id: number; actionType: string; success: boolean; note: string }> = [];
+
+  for (const row of ready) {
+    const result = await executeOkxRuntimeAction(row.actionType);
+    const nextStatus = result.success ? "live_executed" : "live_skipped";
+    updateRuntimeActionStatus({ id: row.id, status: nextStatus, updatedAt: Date.now(), executorNote: result.note });
+    results.push({ id: row.id, actionType: row.actionType, ...result });
+    console.error(`[LIVE] ${row.actionType} id=${row.id}: ${result.note}`);
+  }
+
+  console.log(JSON.stringify({ live: true, executedCount: results.length, results }, null, 2));
+}
+
 const options = parseCliOptions(process.argv.slice(2));
-console.log(JSON.stringify(executeRuntimeActionDryRun(options), null, 2));
+
+if (options.live) {
+  runLiveExecution(options).catch((err) => {
+    console.error("Live executor error:", err);
+    process.exit(1);
+  });
+} else {
+  console.log(JSON.stringify(executeRuntimeActionDryRun(options), null, 2));
+}
